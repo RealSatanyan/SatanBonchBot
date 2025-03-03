@@ -71,7 +71,8 @@ class LessonController:
                     await self.api.click_start_lesson()
                     logging.info("Клик выполнен.")
                 else:
-                    logging.info("Время вне рабочего интервала. Клик не выполнен.")
+                    pass
+                    # logging.info("Время вне рабочего интервала. Клик не выполнен.")
                 await asyncio.sleep(5)  # Пауза между проверками
             except Exception as e:
                 logging.error(f"Ошибка при выполнении клика: {e}", exc_info=True)
