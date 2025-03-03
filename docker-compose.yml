@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: telegram_bot
+    restart: unless-stopped
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}  # Используем переменные окружения из .env
+    volumes:
+      - .:/app  # Монтируем текущую директорию для разработки
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"  # Ограничиваем размер логов
+        max-file: "3"    # Храним только 3 файла логов
+    deploy:
+      resources:
+        limits:
+          cpus: '0.8'  # Ограничиваем использование CPU
+          memory: 512M  # Ограничиваем использование памяти

@@ -10,6 +10,9 @@ import os
 
 load_dotenv()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
+logging.info(f"bot token {BOT_TOKEN}")
+if not BOT_TOKEN:
+    logging.info(f"bot token none")
 conn = sqlite3.connect('users.db', check_same_thread=False)
 cursor = conn.cursor()
 
@@ -79,7 +82,8 @@ async def cmd_start(message: types.Message):
         "/start_lesson - запустить автокликалку\n"
         "/stop_lesson - остановить автокликалку\n"
         "/status - статус автокликалк\n"
-        "/login - вход в аккаунт"
+        "/login - вход в аккаунт\n"
+        "/timetable - получить расписание"
     )
 
 @dp.message(Command("start_lesson"))
@@ -165,8 +169,44 @@ async def cmd_my_account(message: types.Message):
         await message.answer(f"Ваш сохраненный email: {result[0]}")
     else:
         await message.answer("У вас нет сохраненного аккаунта.")
-        
+
+# Добавим команду /timetable для получения расписания
+@dp.message(Command("timetable"))
+async def cmd_timetable(message: types.Message):
+    global controller
+    if not controller:
+        await message.answer("Сначала авторизуйтесь с помощью /login.")
+        return
+
+    try:
+        timetable = await api.get_timetable()
+        await message.answer(f"Ваше расписание:\n{timetable}")
+    except Exception as e:
+        await message.answer(f"Ошибка при получении расписания: {e}")
+
+async def auto_login_user(user_id):
+    global controller
+    cursor.execute('SELECT email, password FROM users WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    if result:
+        email, password = result
+        try:
+            await api.login(email, password)
+            controller = LessonController(api)
+            logging.info(f"Пользователь {user_id} автоматически авторизован.")
+        except Exception as e:
+            logging.error(f"Ошибка автоматической авторизации для пользователя {user_id}: {e}")
+
+async def on_startup(dp):
+    # При старте бота проверяем всех пользователей и авторизуем их
+    cursor.execute('SELECT user_id FROM users')
+    users = cursor.fetchall()
+    for user in users:
+        user_id = user[0]
+        await auto_login_user(user_id)
+
 async def main():
+    await on_startup(dp)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
