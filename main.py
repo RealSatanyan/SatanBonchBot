@@ -7,6 +7,8 @@ import sqlite3
 from contextlib import closing
 from dotenv import load_dotenv
 from datetime import datetime, time
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 import pytz
 import os
 import sys
@@ -179,6 +181,87 @@ async def cmd_my_account(message: types.Message):
     else:
         await message.answer("У вас нет сохраненного аккаунта.")
 
+
+def format_timetable(timetable) -> str:
+    """
+    Форматирует список занятий в читаемый текст.
+    :param timetable: Список занятий.
+    :return: Отформатированная строка с расписанием.
+    """
+    formatted_timetable = "📅 Ваше расписание:\n\n"
+    
+    # Группируем занятия по дням
+    days = {}
+    for lesson in timetable:
+        date = lesson.date
+        if date not in days:
+            days[date] = []
+        days[date].append(lesson)
+    
+    # Сортируем дни по дате
+    sorted_days = sorted(days.items(), key=lambda x: datetime.strptime(x[0], "%Y-%m-%d"))
+    
+    for date, lessons in sorted_days:
+        formatted_timetable += f"----------------------\n📌 *{date} ({lessons[0].day})*\n"
+        for lesson in lessons:
+            formatted_timetable += (
+                f"⏰ *{lesson.time}* \n"
+                f"📚 {lesson.subject} \n"
+                f"🎓 {lesson.teacher} \n"
+                f"🏫 {lesson.location} \n"
+                f"🔹 Тип: {lesson.lesson_type}\n\n"
+            )
+    
+    return formatted_timetable
+
+def get_week_navigation_buttons(week_offset: int = 0) -> InlineKeyboardMarkup:
+    """
+    Создает инлайн-клавиатуру с кнопками для навигации по неделям.
+    :param week_offset: Текущее смещение недели.
+    :return: InlineKeyboardMarkup с кнопками.
+    """
+    buttons = [
+        [
+            InlineKeyboardButton(text="⬅️ Предыдущая неделя", callback_data=f"prev_week_{week_offset - 1}"),
+            InlineKeyboardButton(text="Следующая неделя ➡️", callback_data=f"next_week_{week_offset + 1}"),
+        ],
+        [
+            InlineKeyboardButton(text="Эта неделя", callback_data="current_week_0"),
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@dp.callback_query(F.data.startswith("prev_week_") | F.data.startswith("next_week_") | F.data.startswith("current_week_"))
+async def process_week_navigation(callback_query: CallbackQuery):
+    # Извлекаем смещение недели из callback_data
+    callback_data = callback_query.data
+    if callback_data.startswith("prev_week_"):
+        week_offset = int(callback_data.split("_")[2])
+    elif callback_data.startswith("next_week_"):
+        week_offset = int(callback_data.split("_")[2])
+    elif callback_data.startswith("current_week_"):
+        week_offset = 0
+
+
+    try:
+        # Получаем расписание для выбранной недели
+        timetable = await api.get_timetable(week_offset=week_offset)
+        
+        # Форматируем расписание
+        formatted_timetable = format_timetable(timetable)
+        
+        # Обновляем инлайн-кнопки
+        reply_markup = get_week_navigation_buttons(week_offset=week_offset)
+        
+        # Редактируем сообщение с новым расписанием и кнопками
+        await callback_query.message.edit_text(formatted_timetable, parse_mode="Markdown", reply_markup=reply_markup)
+        
+        # Подтверждаем обработку callback
+        await callback_query.answer()
+    
+    except Exception as e:
+        await callback_query.answer(f"Ошибка: {e}", show_alert=True)
 # Добавим команду /timetable для получения расписания
 @dp.message(Command("timetable"))
 async def cmd_timetable(message: types.Message):
@@ -188,8 +271,17 @@ async def cmd_timetable(message: types.Message):
         return
 
     try:
-        timetable = await api.get_timetable()
-        await message.answer(f"Ваше расписание:\n{timetable}")
+        # Получаем расписание для текущей недели
+        timetable = await api.get_timetable(week_offset=0)
+        
+        # Форматируем расписание
+        formatted_timetable = format_timetable(timetable)
+        
+        # Добавляем инлайн-кнопки
+        reply_markup = get_week_navigation_buttons(week_offset=0)
+        
+        await message.answer(formatted_timetable, parse_mode="Markdown", reply_markup=reply_markup)
+    
     except Exception as e:
         await message.answer(f"Ошибка при получении расписания: {e}")
 
