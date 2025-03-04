@@ -6,7 +6,7 @@ from bonchapi import BonchAPI  # Импортируем ваш API
 import sqlite3
 from contextlib import closing
 from dotenv import load_dotenv
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 import pytz
@@ -48,30 +48,8 @@ class LessonController:
         self.is_running = False
         self.task = None
 
-        # Интервалы пар (начало и конец)
-        self.lesson_intervals = [
-            (time(9, 0), time(10, 35)),   # 1 пара
-            (time(10, 45), time(12, 20)),  # 2 пара
-            (time(13, 0), time(14, 35)),   # 3 пара
-            (time(14, 45), time(16, 20)),  # 4 пара
-            (time(16, 30), time(18, 5)),   # 5 пара
-            (time(18, 15), time(19, 50)), # 6 пара
-            (time(20, 0), time(21, 35))   # 7 пара
-        ]
-
-    def is_time_between(self, start_time, end_time, now_time):
-        """Проверка, находится ли текущее время в заданном интервале."""
-        if start_time <= end_time:
-            return start_time <= now_time <= end_time
-        else:  # Интервал переходит через полночь
-            return start_time <= now_time or now_time <= end_time
-
-    def is_lesson_time(self, now_time):
-        """Проверка, находится ли текущее время в интервале любой из пар."""
-        for start_time, end_time in self.lesson_intervals:
-            if self.is_time_between(start_time, end_time, now_time):
-                return True
-        return False
+        # Время запуска автокликалки (9:00 и 16:00 по Москве)
+        self.scheduled_times = [time(9, 0), time(16, 0)]
 
     async def start_lesson(self):
         if self.is_running:
@@ -82,13 +60,23 @@ class LessonController:
 
         while self.is_running:
             try:
-                now = datetime.now(moscow_tz).time()
-                if self.is_lesson_time(now):
-                    await self.api.click_start_lesson()
-                    logging.info("Клик выполнен.")
-                else:
-                    logging.info("Сейчас не время пар. Клик не выполнен.")
-                await asyncio.sleep(60)  # Пауза между проверками
+                now = datetime.now(moscow_tz)
+                next_run = self.get_next_run_time(now)
+
+                # Ожидание до следующего времени запуска
+                wait_seconds = (next_run - now).total_seconds()
+                if wait_seconds > 0:
+                    logging.info(f"Ожидание следующего запуска в {next_run.strftime('%H:%M')}.")
+                    await asyncio.sleep(wait_seconds)
+
+                # Проверяем, что автокликалка всё ещё запущена
+                if not self.is_running:
+                    break
+
+                # Выполняем клик
+                await self.api.click_start_lesson()
+                logging.info("Клик выполнен.")
+
             except Exception as e:
                 logging.error(f"Ошибка при выполнении клика: {e}", exc_info=True)
                 await asyncio.sleep(60)  # Пауза перед повторной попыткой
@@ -96,13 +84,25 @@ class LessonController:
 
         return "Автокликалка запущена."
 
-    async def stop_lesson(self):
+    def get_next_run_time(self, now):
+        """Вычисляет следующее время запуска."""
+        for scheduled_time in self.scheduled_times:
+            # Создаем datetime для следующего запуска
+            next_run = datetime.combine(now.date(), scheduled_time, tzinfo=now.tzinfo)
+            if next_run <= now:
+                # Если время уже прошло сегодня, планируем на следующий день
+                next_run += timedelta(days=1)
+            return next_run
+        return None
+
+    async def stop_lesson(self, user_id: int):
         if not self.is_running:
             return "Автокликалка уже остановлена."
 
         self.is_running = False
         if self.task:
             self.task.cancel()
+            logging.info(f'Пользователь {user_id} остановил автокликалку.')
         return "Автокликалка остановлена."
 
     async def get_status(self):
@@ -114,49 +114,10 @@ async def cmd_start(message: types.Message):
         "Привет! Этот бот что то типо моей вариации BonchBot."
     )
 
-@dp.message(Command("start_lesson"))
-async def cmd_start_lesson(message: types.Message):
-    global controller
-    if not controller:
-        await message.answer("Сначала авторизуйтесь с помощью /login.")
-        return
-
-    if controller.is_running:
-        await message.answer("Автокликалка уже запущена.")
-        return
-
-    controller.task = asyncio.create_task(controller.start_lesson())
-    await message.answer("Автокликалка запущена.")
-
-@dp.message(Command("stop_lesson"))
-async def cmd_stop_lesson(message: types.Message):
-    global controller
-    if not controller:
-        await message.answer("Сначала авторизуйтесь с помощью /login.")
-        return
-
-    if not controller.is_running:
-        await message.answer("Автокликалка уже остановлена.")
-        return
-
-    await controller.stop_lesson()
-    await message.answer("Автокликалка остановлена.")
-
-
-@dp.message(Command("status"))
-async def cmd_status(message: types.Message):
-    global controller
-    if not controller:
-        await message.answer("Сначала авторизуйтесь с помощью /login.")
-        return
-
-    status = await controller.get_status()
-    await message.answer(status)
-
+controllers = {}  # Словарь для хранения контроллеров
 
 @dp.message(Command("login"))
 async def cmd_login(message: types.Message):
-    global controller
     try:
         args = message.text.split()
         if len(args) != 3:
@@ -181,11 +142,52 @@ async def cmd_login(message: types.Message):
         conn.commit()
         
         await api.login(email, password)
-        controller = LessonController(api)
+        controllers[user_id] = LessonController(api)  # Создаем контроллер для пользователя
         await message.answer("Авторизация прошла успешно!")
 
     except Exception as e:
         await message.answer(f"Ошибка авторизации: {e}")
+
+@dp.message(Command("start_lesson"))
+async def cmd_start_lesson(message: types.Message):
+    user_id = message.from_user.id
+    if user_id not in controllers:
+        await message.answer("Сначала авторизуйтесь с помощью /login.")
+        return
+
+    controller = controllers[user_id]  # Используем контроллер пользователя
+    if controller.is_running:
+        await message.answer("Автокликалка уже запущена.")
+        return
+
+    controller.task = asyncio.create_task(controller.start_lesson())
+    await message.answer("Автокликалка запущена.")
+
+@dp.message(Command("stop_lesson"))
+async def cmd_stop_lesson(message: types.Message):
+    user_id = message.from_user.id
+    if user_id not in controllers:
+        await message.answer("Сначала авторизуйтесь с помощью /login.")
+        return
+
+    controller = controllers[user_id]  # Используем контроллер пользователя
+    if not controller.is_running:
+        await message.answer("Автокликалка уже остановлена.")
+        return
+
+    await controller.stop_lesson(user_id)
+    await message.answer("Автокликалка остановлена.")
+
+@dp.message(Command("status"))
+async def cmd_status(message: types.Message):
+    user_id = message.from_user.id
+    if user_id not in controllers:
+        await message.answer("Сначала авторизуйтесь с помощью /login.")
+        return
+
+    controller = controllers[user_id]  # Используем контроллер пользователя
+    status = await controller.get_status()
+    await message.answer(status)
 
 # Добавим команду /my_account для просмотра сохраненных данных
 @dp.message(Command("my_account"))
@@ -282,14 +284,15 @@ async def process_week_navigation(callback_query: CallbackQuery):
 # Добавим команду /timetable для получения расписания
 @dp.message(Command("timetable"))
 async def cmd_timetable(message: types.Message):
-    global controller
-    if not controller:
+    user_id = message.from_user.id
+    if user_id not in controllers:  # Проверяем, есть ли контроллер для пользователя
         await message.answer("Сначала авторизуйтесь с помощью /login.")
         return
 
+    controller = controllers[user_id]  # Используем контроллер пользователя
     try:
         # Получаем расписание для текущей недели
-        timetable = await api.get_timetable(week_offset=0)
+        timetable = await controller.api.get_timetable(week_offset=0)
         
         # Форматируем расписание
         formatted_timetable = format_timetable(timetable)
@@ -303,23 +306,26 @@ async def cmd_timetable(message: types.Message):
         await message.answer(f"Ошибка при получении расписания: {e}")
 
 async def auto_login_user(user_id):
-    global controller
     cursor.execute('SELECT email, password FROM users WHERE user_id = ?', (user_id,))
     result = cursor.fetchone()
     if result:
         email, password = result
         try:
             await api.login(email, password)
-            controller = LessonController(api)
+            controllers[user_id] = LessonController(api)  # Создаем контроллер для пользователя
             logging.info(f"Пользователь {user_id} автоматически авторизован.")
         except Exception as e:
             logging.error(f"Ошибка автоматической авторизации для пользователя {user_id}: {e}")
 
 async def auto_start_lesson(user_id):
-    global controller
-    if controller and not controller.is_running:
-        controller.task = asyncio.create_task(controller.start_lesson())
-        logging.info("Автокликалка запущена после перезапуска сервера.")
+    """
+    Автоматически запускает автокликалку для пользователя, если она была активна.
+    """
+    if user_id in controllers:  # Проверяем, есть ли контроллер для пользователя
+        controller = controllers[user_id]
+        if not controller.is_running:  # Если автокликалка не запущена, запускаем её
+            controller.task = asyncio.create_task(controller.start_lesson())
+            logging.info(f"Автокликалка автоматически запущена для пользователя {user_id}.")
         
         
 async def set_bot_commands(bot: Bot):
