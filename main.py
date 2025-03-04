@@ -48,6 +48,17 @@ class LessonController:
         self.is_running = False
         self.task = None
 
+        # Интервалы пар (начало и конец)
+        self.lesson_intervals = [
+            (time(9, 0), time(10, 35)),   # 1 пара
+            (time(10, 45), time(12, 20)),  # 2 пара
+            (time(13, 0), time(14, 35)),   # 3 пара
+            (time(14, 45), time(16, 20)),  # 4 пара
+            (time(16, 30), time(18, 5)),   # 5 пара
+            (time(18, 15), time(19, 50)), # 6 пара
+            (time(20, 0), time(21, 35))   # 7 пара
+        ]
+
     def is_time_between(self, start_time, end_time, now_time):
         """Проверка, находится ли текущее время в заданном интервале."""
         if start_time <= end_time:
@@ -55,29 +66,34 @@ class LessonController:
         else:  # Интервал переходит через полночь
             return start_time <= now_time or now_time <= end_time
 
+    def is_lesson_time(self, now_time):
+        """Проверка, находится ли текущее время в интервале любой из пар."""
+        for start_time, end_time in self.lesson_intervals:
+            if self.is_time_between(start_time, end_time, now_time):
+                return True
+        return False
+
     async def start_lesson(self):
         if self.is_running:
             return "Автокликалка уже запущена."
 
         self.is_running = True
         moscow_tz = pytz.timezone('Europe/Moscow')
-        start_time = time(9, 0)  # 9:00 утра
-        end_time = time(21, 0)   # 9:00 вечера
 
         while self.is_running:
             try:
                 now = datetime.now(moscow_tz).time()
-                if self.is_time_between(start_time, end_time, now):
+                if self.is_lesson_time(now):
                     await self.api.click_start_lesson()
                     logging.info("Клик выполнен.")
                 else:
-                    pass
-                    # logging.info("Время вне рабочего интервала. Клик не выполнен.")
-                await asyncio.sleep(5)  # Пауза между проверками
+                    logging.info("Сейчас не время пар. Клик не выполнен.")
+                await asyncio.sleep(60)  # Пауза между проверками
             except Exception as e:
                 logging.error(f"Ошибка при выполнении клика: {e}", exc_info=True)
-                self.is_running = False
-                return f"Ошибка: {e}"
+                await asyncio.sleep(60)  # Пауза перед повторной попыткой
+                continue  # Продолжаем цикл для повторной попытки
+
         return "Автокликалка запущена."
 
     async def stop_lesson(self):
