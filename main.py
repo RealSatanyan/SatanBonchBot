@@ -46,10 +46,13 @@ controllers = {}  # Словарь для хранения контроллер�
 apis = {}  # Словарь для хранения экземпляров BonchAPI
 
 class LessonController:
-    def __init__(self, api):
+    def __init__(self, api, bot, user_id):
         self.api = api
+        self.bot = bot
+        self.user_id = user_id
         self.is_running = False
         self.task = None
+        self.notified = False  # Флаг для отслеживания отправки уведомления
 
         # Интервалы пар (начало и конец)
         self.lesson_intervals = [
@@ -87,14 +90,22 @@ class LessonController:
             try:
                 now = datetime.now(moscow_tz).time()
                 if self.is_lesson_time(now):
+                    # Если уведомление еще не отправлено, отправляем его
+                    if not self.notified:
+                        # await self.bot.send_message(self.user_id, "Скорее всего ты отмечен на паре, если не отметило, то через 10 минут снова попробую (Если у тебя сейчас нет пары, то тебе всё равно придёт оповещение, чуть позже исправлю)")
+                        self.notified = True  # Устанавливаем флаг, что уведомление отправлено
+
+                    # Пытаемся выполнить клик
                     await self.api.click_start_lesson()
                     logging.info("Клик выполнен.")
                 else:
+                    # Если время пар закончилось, сбрасываем флаг уведомления
+                    self.notified = False
                     logging.info("Сейчас не время пар. Клик не выполнен.")
-                await asyncio.sleep(1200)  # Пауза между проверками
+                await asyncio.sleep(600)  # Пауза между проверками
             except Exception as e:
                 logging.error(f"Ошибка при выполнении клика: {e}", exc_info=True)
-                await asyncio.sleep(1200)  # Пауза перед повторной попыткой
+                await asyncio.sleep(60)  # Пауза перед повторной попыткой (1 минута)
                 continue  # Продолжаем цикл для повторной попытки
 
         return "Автокликалка запущена."
@@ -111,7 +122,7 @@ class LessonController:
 
     async def get_status(self):
         return "Автокликалка запущена." if self.is_running else "Автокликалка остановлена."
-
+    
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
@@ -149,7 +160,7 @@ async def cmd_login(message: types.Message):
         # Создаем новый экземпляр BonchAPI для пользователя
         apis[user_id] = BonchAPI()
         await apis[user_id].login(email, password)
-        controllers[user_id] = LessonController(apis[user_id])  # Передаем api пользователя в контроллер
+        controllers[user_id] = LessonController(apis[user_id], bot, user_id)  # Передаем api, bot и user_id в контроллер
         await message.answer("Авторизация прошла успешно!")
 
     except Exception as e:
@@ -265,7 +276,8 @@ def generate_timetable_image(timetable) -> str:
         emoji_font = ImageFont.load_default()
 
     # Начальные координаты
-    x = 10
+    x_left = 10  # Левый столбик
+    x_right = width // 2 + 10  # Правый столбик
     y = 10
 
     # Группируем занятия по дням
@@ -279,33 +291,108 @@ def generate_timetable_image(timetable) -> str:
     # Сортируем дни по дате
     sorted_days = sorted(days.items(), key=lambda x: datetime.strptime(x[0], "%Y-%m-%d"))
 
-    for date, lessons in sorted_days:
-        # Заголовок дня
-        draw_text_with_emoji(draw, f"{date} ({lessons[0].day})", x, y, text_font, emoji_font)
-        y += 30
+    # Распределяем дни по столбикам
+    left_days = ["Понедельник", "Среда", "Пятница"]
+    right_days = ["Вторник", "Четверг", "Суббота"]
 
-        # Отображаем все занятия подряд
-        for lesson in lessons:
-            # Информация о занятии
-            lesson_info = (
-                f"⏰ {lesson.time}\n"
-                f"📚 {lesson.subject}\n"
-                f"🎓 {lesson.teacher}\n"
-                f"🏫 {lesson.location}\n"
-                f"🔹 Тип: {lesson.lesson_type}\n"
-            )
-            draw_text_with_emoji(draw, lesson_info, x, y, text_font, emoji_font)
-            y += 40  # Отступ между занятиями
+    # Отрисовываем левый столбик
+    y_left = y
+    for day_name in left_days:
+        # Проверяем, есть ли занятия для этого дня
+        day_lessons = []
+        for date, lessons in sorted_days:
+            if lessons[0].day == day_name:
+                day_lessons = lessons
+                break
 
-        # Разделитель между днями
-        draw.line((10, y, width - 10, y), fill=(0, 0, 0), width=2)
-        y += 20
+        if day_lessons:
+            # Заголовок дня
+            draw_text_with_emoji(draw, day_name, x_left, y_left, text_font, emoji_font)
+            y_left += 30
+
+            # Отображаем занятия
+            for lesson in day_lessons:
+                lesson_info = (
+                    f"⏰ {lesson.time}\n"
+                    f"📚 {lesson.subject}\n"
+                    f"🎓 {lesson.teacher}\n"
+                    f"🏫 {lesson.location}\n"
+                    f"🔹 Тип: {lesson.lesson_type}\n"
+                )
+                y_left = draw_lesson(draw, lesson_info, x_left, y_left, text_font, emoji_font, width // 2 - 20)
+                y_left += 10  # Отступ между занятиями
+
+            y_left += 20  # Отступ между днями
+
+    # Отрисовываем правый столбик
+    y_right = y
+    for day_name in right_days:
+        # Проверяем, есть ли занятия для этого дня
+        day_lessons = []
+        for date, lessons in sorted_days:
+            if lessons[0].day == day_name:
+                day_lessons = lessons
+                break
+
+        if day_lessons:
+            # Заголовок дня
+            draw_text_with_emoji(draw, day_name, x_right, y_right, text_font, emoji_font)
+            y_right += 30
+
+            # Отображаем занятия
+            for lesson in day_lessons:
+                lesson_info = (
+                    f"⏰ {lesson.time}\n"
+                    f"📚 {lesson.subject}\n"
+                    f"🎓 {lesson.teacher}\n"
+                    f"🏫 {lesson.location}\n"
+                    f"🔹 Тип: {lesson.lesson_type}\n"
+                )
+                y_right = draw_lesson(draw, lesson_info, x_right, y_right, text_font, emoji_font, width // 2 - 20)
+                y_right += 10  # Отступ между занятиями
+
+            y_right += 20  # Отступ между днями
 
     # Сохраняем изображение
     image_path = "timetable.png"
     logging.info(f"Изображение успешно сохранено по пути: {image_path}")
     image.save(image_path)
     return image_path
+
+def draw_lesson(draw, lesson_info, x, y, text_font, emoji_font, max_width):
+    """
+    Рисует информацию о занятии.
+    :param draw: Объект ImageDraw.
+    :param lesson_info: Текст с информацией о занятии.
+    :param x: Начальная координата X.
+    :param y: Начальная координата Y.
+    :param text_font: Шрифт для текста.
+    :param emoji_font: Шрифт для эмодзи.
+    :param max_width: Максимальная ширина текста.
+    :return: Новое значение Y после отрисовки.
+    """
+    # Адаптируем размер шрифта, если текст не помещается
+    font_size = 20
+    while True:
+        try:
+            text_font = ImageFont.truetype("G8.otf", size=font_size)
+            emoji_font = ImageFont.truetype("seguiemj.ttf", size=font_size)
+        except IOError:
+            text_font = ImageFont.load_default()
+            emoji_font = ImageFont.load_default()
+
+        # Проверяем, помещается ли текст по ширине
+        text_width = max(draw.textlength(line, font=text_font) for line in lesson_info.split("\n"))
+        if text_width <= max_width or font_size <= 10:
+            break
+        font_size -= 1
+
+    # Рисуем текст с эмодзи
+    for line in lesson_info.split("\n"):
+        draw_text_with_emoji(draw, line, x, y, text_font, emoji_font)
+        y += 20  # Отступ между строками
+
+    return y
 
 def draw_text_with_emoji(draw, text, x, y, text_font, emoji_font):
     """
@@ -445,7 +532,7 @@ async def auto_login_user(user_id):
         try:
             apis[user_id] = BonchAPI()
             await apis[user_id].login(email, password)
-            controllers[user_id] = LessonController(apis[user_id])  # Создаем контроллер для пользователя
+            controllers[user_id] = LessonController(apis[user_id], bot, user_id)  # Передаем bot и user_id
             logging.info(f"Пользователь {user_id} автоматически авторизован.")
         except Exception as e:
             logging.error(f"Ошибка автоматической авторизации для пользователя {user_id}: {e}")
@@ -479,7 +566,7 @@ async def on_startup(dp):
     users = cursor.fetchall()
     for user in users:
         user_id = user[0]
-        await auto_login_user(user_id)
+        await auto_login_user(user_id)  # Передаем user_id
         await auto_start_lesson(user_id)  # Запускаем кликалку после авторизации
 
 async def main():
