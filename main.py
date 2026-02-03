@@ -299,8 +299,11 @@ async def cmd_login(message: types.Message):
 async def cmd_start_lesson(message: types.Message):
     user_id = message.from_user.id
     if user_id not in controllers:
-        await message.answer("Сначала авторизуйтесь с помощью /login.")
-        return
+        # Пытаемся автоматически авторизовать пользователя, если он есть в БД
+        success = await auto_login_user(user_id)
+        if not success or user_id not in controllers:
+            await message.answer("Сначала авторизуйтесь с помощью /login. Если вы уже авторизованы, попробуйте выполнить /login еще раз.")
+            return
 
     controller = controllers[user_id]  # Используем контроллер пользователя
     if controller.is_running:
@@ -314,8 +317,11 @@ async def cmd_start_lesson(message: types.Message):
 async def cmd_stop_lesson(message: types.Message):
     user_id = message.from_user.id
     if user_id not in controllers:
-        await message.answer("Сначала авторизуйтесь с помощью /login.")
-        return
+        # Пытаемся автоматически авторизовать пользователя, если он есть в БД
+        success = await auto_login_user(user_id)
+        if not success or user_id not in controllers:
+            await message.answer("Сначала авторизуйтесь с помощью /login. Если вы уже авторизованы, попробуйте выполнить /login еще раз.")
+            return
 
     controller = controllers[user_id]  # Используем контроллер пользователя
     if not controller.is_running:
@@ -329,8 +335,11 @@ async def cmd_stop_lesson(message: types.Message):
 async def cmd_status(message: types.Message):
     user_id = message.from_user.id
     if user_id not in controllers:
-        await message.answer("Сначала авторизуйтесь с помощью /login.")
-        return
+        # Пытаемся автоматически авторизовать пользователя, если он есть в БД
+        success = await auto_login_user(user_id)
+        if not success or user_id not in controllers:
+            await message.answer("Сначала авторизуйтесь с помощью /login. Если вы уже авторизованы, попробуйте выполнить /login еще раз.")
+            return
 
     controller = controllers[user_id]  # Используем контроллер пользователя
     status = await controller.get_status()
@@ -339,12 +348,51 @@ async def cmd_status(message: types.Message):
 @dp.message(Command("my_account"))
 async def cmd_my_account(message: types.Message):
     user_id = message.from_user.id
+    logging.info(f"Команда /my_account от пользователя {user_id}")
+    
     cursor.execute('SELECT email FROM users WHERE user_id = ?', (user_id,))
     result = cursor.fetchone()
+    
+    status_parts = []
     if result:
-        await message.answer(f"Ваш сохраненный email: {result[0]}")
+        status_parts.append(f"📧 Email: {result[0]}")
     else:
-        await message.answer("У вас нет сохраненного аккаунта.")
+        status_parts.append("❌ Нет сохраненного аккаунта в БД")
+        await message.answer("\n".join(status_parts))
+        return
+    
+    # Проверяем состояние авторизации ДО попытки восстановления
+    has_api_before = user_id in apis
+    has_controller_before = user_id in controllers
+    
+    status_parts.append(f"🔑 API авторизован: {'✅ Да' if has_api_before else '❌ Нет'}")
+    status_parts.append(f"🎮 Контроллер создан: {'✅ Да' if has_controller_before else '❌ Нет'}")
+    
+    # Если пользователь есть в БД, но нет авторизации, пытаемся восстановить
+    if not has_api_before or not has_controller_before:
+        status_parts.append("\n⚠️ Обнаружена проблема с авторизацией. Попробую восстановить...")
+        logging.info(f"Попытка восстановить авторизацию для пользователя {user_id}")
+        success = await auto_login_user(user_id)
+        
+        # Проверяем состояние ПОСЛЕ попытки восстановления
+        has_api_after = user_id in apis
+        has_controller_after = user_id in controllers
+        
+        if success and has_api_after and has_controller_after:
+            status_parts.append("✅ Авторизация восстановлена!")
+            status_parts.append(f"🔑 API авторизован: ✅ Да")
+            status_parts.append(f"🎮 Контроллер создан: ✅ Да")
+        else:
+            status_parts.append("❌ Не удалось восстановить авторизацию.")
+            status_parts.append("💡 Выполните /login <email> <password> для повторной авторизации.")
+            logging.warning(f"Не удалось восстановить авторизацию для пользователя {user_id}. Success: {success}, has_api: {has_api_after}, has_controller: {has_controller_after}")
+    
+    # Показываем статус автокликалки, если контроллер есть
+    if user_id in controllers:
+        controller = controllers[user_id]
+        status_parts.append(f"⏯️ Автокликалка: {'🟢 Запущена' if controller.is_running else '🔴 Остановлена'}")
+    
+    await message.answer("\n".join(status_parts))
 
 def format_timetable(timetable) -> str:
     """
@@ -690,8 +738,11 @@ async def process_week_navigation(callback_query: CallbackQuery):
 async def cmd_timetable(message: types.Message):
     user_id = message.from_user.id
     if user_id not in apis:  # Проверяем, есть ли api для пользователя
-        await message.answer("Сначала авторизуйтесь с помощью /login.")
-        return
+        # Пытаемся автоматически авторизовать пользователя, если он есть в БД
+        success = await auto_login_user(user_id)
+        if not success or user_id not in apis:
+            await message.answer("Сначала авторизуйтесь с помощью /login. Если вы уже авторизованы, попробуйте выполнить /login еще раз.")
+            return
 
     try:
         # Получаем расписание для текущей недели
@@ -839,17 +890,33 @@ async def cmd_classrooms(message: types.Message):
         await message.answer(f"Ошибка при получении списка кабинетов: {e}")
 
 async def auto_login_user(user_id):
+    """
+    Автоматически авторизует пользователя, если он есть в базе данных.
+    Возвращает True, если авторизация успешна, False в противном случае.
+    """
     cursor.execute('SELECT email, password FROM users WHERE user_id = ?', (user_id,))
     result = cursor.fetchone()
-    if result:
-        email, password = result
-        try:
-            apis[user_id] = DebuggableBonchAPI()
-            await apis[user_id].login(email, password)
-            controllers[user_id] = LessonController(apis[user_id], bot, user_id)  # Передаем bot и user_id
-            logging.info(f"Пользователь {user_id} автоматически авторизован.")
-        except Exception as e:
-            logging.error(f"Ошибка автоматической авторизации для пользователя {user_id}: {e}")
+    if not result:
+        logging.info(f"Пользователь {user_id} не найден в базе данных.")
+        return False
+    
+    email, password = result
+    logging.info(f"Попытка автоматической авторизации для пользователя {user_id} (email: {email})")
+    try:
+        apis[user_id] = DebuggableBonchAPI()
+        await apis[user_id].login(email, password)
+        controllers[user_id] = LessonController(apis[user_id], bot, user_id)  # Передаем bot и user_id
+        logging.info(f"✅ Пользователь {user_id} успешно автоматически авторизован.")
+        return True
+    except Exception as e:
+        error_msg = str(e)
+        logging.error(f"❌ Ошибка автоматической авторизации для пользователя {user_id} (email: {email}): {error_msg}", exc_info=True)
+        # Удаляем частично созданные объекты при ошибке
+        if user_id in apis:
+            del apis[user_id]
+        if user_id in controllers:
+            del controllers[user_id]
+        return False
 
 async def auto_start_lesson(user_id):
     """
@@ -884,8 +951,11 @@ async def on_startup(dp):
     users = cursor.fetchall()
     for user in users:
         user_id = user[0]
-        await auto_login_user(user_id)  # Передаем user_id
-        await auto_start_lesson(user_id)  # Запускаем кликалку после авторизации
+        success = await auto_login_user(user_id)  # Передаем user_id
+        if success:
+            await auto_start_lesson(user_id)  # Запускаем кликалку после авторизации
+        else:
+            logging.warning(f"Не удалось автоматически авторизовать пользователя {user_id} при старте бота.")
 
 async def main():
     await on_startup(dp)
