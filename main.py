@@ -2,11 +2,13 @@ import asyncio
 import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from bonchapi import BonchAPI  # Импортируем ваш API
+import aiohttp
+from bonchapi import BonchAPI, parser  # Импортируем ваш API
 import sqlite3
 from contextlib import closing
 from dotenv import load_dotenv
 from datetime import datetime, time, timedelta
+from pathlib import Path
 from aiogram.types import InputFile
 from aiogram.types import FSInputFile
 from aiogram import Bot, Dispatcher, types, F
@@ -16,6 +18,44 @@ import pytz
 import os
 import sys
 from aiogram.types import BotCommand
+from typing import Optional
+
+
+class DebuggableBonchAPI(BonchAPI):
+    """
+    Расширяет стандартный BonchAPI подробными логами при клике.
+    """
+
+    async def click_start_lesson(self):
+        URL = "https://lk.sut.ru/cabinet/project/cabinet/forms/raspisanie.php"
+
+        timetable = await self.get_raw_timetable()
+        
+        # Проверяем, не является ли ответ редиректом на login=no (истекшая сессия)
+        if timetable and ("login=no" in timetable or "index.php?login=no" in timetable):
+            raise ValueError("Session expired - redirect to login=no. Need to re-authenticate.")
+        
+        week = await parser.get_week(timetable)
+        lesson_ids = await parser.get_lesson_id(timetable)
+        logging.debug("Неделя %s, найдено %s кандидат(ов) для клика: %s", week, len(lesson_ids), lesson_ids)
+
+        for lesson_id in lesson_ids:
+            data = {"open": 1, "rasp": lesson_id, "week": week}
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(URL, cookies=self.cookies, data=data) as resp:
+                    text = await resp.text()
+                    
+                    # Проверяем ответ на ошибку авторизации
+                    if text and ("login=no" in text or "index.php?login=no" in text):
+                        raise ValueError("Session expired during lesson click - redirect to login=no. Need to re-authenticate.")
+                    
+                    logging.debug(
+                        "Ответ на клик урока %s: статус %s, первые 200 символов: %s",
+                        lesson_id,
+                        resp.status,
+                        text[:200],
+                    )
 
 logging.getLogger('aiogram').setLevel(logging.DEBUG)
 logging.basicConfig(
@@ -53,6 +93,8 @@ class LessonController:
         self.is_running = False
         self.task = None
         self.notified = False  # Флаг для отслеживания отправки уведомления
+        self.debug_dir = Path("debug_dumps")
+        self.debug_dir.mkdir(exist_ok=True)
 
         # Интервалы пар (начало и конец)
         self.lesson_intervals = [
@@ -96,6 +138,7 @@ class LessonController:
                         self.notified = True  # Устанавливаем флаг, что уведомление отправлено
 
                     # Пытаемся выполнить клик
+                    logging.debug("Попытка кликнуть занятие для пользователя %s", self.user_id)
                     await self.api.click_start_lesson()
                     logging.info("Клик выполнен.")
                 else:
@@ -103,8 +146,27 @@ class LessonController:
                     self.notified = False
                     logging.info("Сейчас не время пар. Клик не выполнен.")
                 await asyncio.sleep(600)  # Пауза между проверками
+            except ValueError as e:
+                # Обрабатываем ошибку истекшей сессии
+                if "Session expired" in str(e) or "login=no" in str(e):
+                    logging.warning(f"Сессия истекла для пользователя {self.user_id}. Попытка переавторизации...")
+                    try:
+                        # Пытаемся переавторизоваться
+                        await self.reauthenticate()
+                        logging.info(f"Переавторизация успешна для пользователя {self.user_id}")
+                    except Exception as reauth_error:
+                        logging.error(f"Ошибка переавторизации для пользователя {self.user_id}: {reauth_error}")
+                        await self.bot.send_message(self.user_id, "⚠️ Ваша сессия истекла. Пожалуйста, выполните /login для повторной авторизации.")
+                        self.is_running = False
+                        break
+                else:
+                    logging.error(f"Ошибка при выполнении клика: {e}", exc_info=True)
+                    await self.capture_debug_artifacts(e)
+                await asyncio.sleep(60)  # Пауза перед повторной попыткой (1 минута)
+                continue  # Продолжаем цикл для повторной попытки
             except Exception as e:
                 logging.error(f"Ошибка при выполнении клика: {e}", exc_info=True)
+                await self.capture_debug_artifacts(e)
                 await asyncio.sleep(60)  # Пауза перед повторной попыткой (1 минута)
                 continue  # Продолжаем цикл для повторной попытки
 
@@ -122,6 +184,62 @@ class LessonController:
 
     async def get_status(self):
         return "Автокликалка запущена." if self.is_running else "Автокликалка остановлена."
+
+    async def reauthenticate(self):
+        """
+        Переавторизует пользователя при истечении сессии.
+        """
+        cursor.execute('SELECT email, password FROM users WHERE user_id = ?', (self.user_id,))
+        result = cursor.fetchone()
+        if not result:
+            raise ValueError(f"Не найдены данные для переавторизации пользователя {self.user_id}")
+        
+        email, password = result
+        # Создаем новый экземпляр API и авторизуемся
+        apis[self.user_id] = DebuggableBonchAPI()
+        await apis[self.user_id].login(email, password)
+        # Обновляем ссылку на API в контроллере
+        self.api = apis[self.user_id]
+
+    async def dump_timetable_snapshot(self, reason: str) -> Optional[Path]:
+        """
+        Сохраняет HTML расписания для дальнейшего анализа.
+        """
+        try:
+            raw_html = await self.api.get_raw_timetable()
+            
+            # Проверяем, не является ли ответ редиректом на login=no (истекшая сессия)
+            if raw_html and ("login=no" in raw_html or "index.php?login=no" in raw_html):
+                logging.warning("Обнаружен редирект на login=no - сессия истекла. Не сохраняем снимок. (%s)", reason)
+                raise ValueError("Session expired - redirect to login=no")
+            
+            timestamp = datetime.now(pytz.timezone('Europe/Moscow')).strftime("%Y%m%d_%H%M%S")
+            file_path = self.debug_dir / f"{self.user_id}_{timestamp}.html"
+            file_path.write_text(raw_html, encoding="utf-8")
+            logging.error("Снимок расписания сохранен в %s (%s)", file_path, reason)
+            return file_path
+        except ValueError:
+            # Не логируем ValueError как ошибку - это ожидаемая ситуация с истекшей сессией
+            raise
+        except Exception as dump_error:
+            logging.error("Не удалось сохранить снимок расписания: %s", dump_error, exc_info=True)
+            return None
+
+    async def capture_debug_artifacts(self, error: Exception):
+        """
+        Снимает дополнительную отладочную информацию для проблемных сценариев.
+        """
+        # Не сохраняем снимки при истекшей сессии
+        if isinstance(error, ValueError) and ("Session expired" in str(error) or "login=no" in str(error)):
+            logging.warning("Пропускаем сохранение снимка из-за истекшей сессии")
+            return
+        
+        if isinstance(error, AttributeError) and "NoneType" in str(error):
+            try:
+                await self.dump_timetable_snapshot("parser_get_week_failed")
+            except ValueError:
+                # Игнорируем ошибки истекшей сессии при сохранении снимка
+                pass
     
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -158,7 +276,7 @@ async def cmd_login(message: types.Message):
         conn.commit()
 
         # Создаем новый экземпляр BonchAPI для пользователя
-        apis[user_id] = BonchAPI()
+        apis[user_id] = DebuggableBonchAPI()
         await apis[user_id].login(email, password)
         controllers[user_id] = LessonController(apis[user_id], bot, user_id)  # Передаем api, bot и user_id в контроллер
         await message.answer("Авторизация прошла успешно!")
@@ -530,7 +648,7 @@ async def auto_login_user(user_id):
     if result:
         email, password = result
         try:
-            apis[user_id] = BonchAPI()
+            apis[user_id] = DebuggableBonchAPI()
             await apis[user_id].login(email, password)
             controllers[user_id] = LessonController(apis[user_id], bot, user_id)  # Передаем bot и user_id
             logging.info(f"Пользователь {user_id} автоматически авторизован.")

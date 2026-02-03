@@ -1,2 +1,4 @@
 .env
 users.db
+.venv
+debug_dumps
