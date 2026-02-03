@@ -20,6 +20,15 @@ import sys
 from aiogram.types import BotCommand
 from typing import Optional
 
+# Импорт для работы с расписанием без авторизации
+try:
+    from TImetabels import BonchAPI as TimetableBonchAPI
+except ImportError:
+    # Если импорт не работает, используем альтернативный путь
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from TImetabels import BonchAPI as TimetableBonchAPI
+
 
 class DebuggableBonchAPI(BonchAPI):
     """
@@ -84,6 +93,8 @@ dp = Dispatcher()
 
 controllers = {}  # Словарь для хранения контроллеров
 apis = {}  # Словарь для хранения экземпляров BonchAPI
+# Экземпляр BonchAPI для работы с расписанием без авторизации (преподаватели, кабинеты)
+timetable_api = None  # Будет инициализирован при первом использовании
 
 class LessonController:
     def __init__(self, api, bot, user_id):
@@ -367,6 +378,61 @@ def format_timetable(timetable) -> str:
     
     return formatted_timetable
 
+def format_timetable_dict(timetable: list, title: str = "Расписание") -> str:
+    """
+    Форматирует список занятий из словарей (формат TImetabels.py) в читаемый текст.
+    :param timetable: Список словарей с занятиями.
+    :param title: Заголовок расписания.
+    :return: Отформатированная строка с расписанием.
+    """
+    if isinstance(timetable, str):
+        return f"❌ {timetable}"
+    
+    if not timetable:
+        return "📅 Расписание пусто"
+    
+    formatted_timetable = f"📅 {title}:\n\n"
+    
+    # Группируем занятия по дням
+    days = {}
+    for lesson in timetable:
+        date = lesson.get('Число', '')
+        if date not in days:
+            days[date] = []
+        days[date].append(lesson)
+    
+    # Сортируем дни по дате
+    sorted_days = sorted(days.items(), key=lambda x: datetime.strptime(x[0], "%Y.%m.%d") if x[0] else datetime.min)
+    
+    for date, lessons in sorted_days:
+        day_name = lessons[0].get('День недели', '')
+        formatted_timetable += f"----------------------\n📌 *{date} ({day_name})*\n"
+        
+        # Сортируем занятия по времени
+        lessons_sorted = sorted(lessons, key=lambda x: x.get('Время занятия', '') or '')
+        
+        for lesson in lessons_sorted:
+            time_str = lesson.get('Время занятия', 'Не указано')
+            subject = lesson.get('Предмет', 'Не указано')
+            teacher = lesson.get('ФИО преподавателя', 'Не указано')
+            room = lesson.get('Номер кабинета', 'Не указано')
+            lesson_type = lesson.get('Тип занятия', '')
+            group = lesson.get('Группа', '')
+            
+            formatted_timetable += f"⏰ *{time_str}*\n"
+            formatted_timetable += f"📚 {subject}\n"
+            if group:
+                formatted_timetable += f"👥 Группа: {group}\n"
+            if teacher and teacher != 'Не указано':
+                formatted_timetable += f"🎓 {teacher}\n"
+            if room and room != 'Не указано':
+                formatted_timetable += f"🏫 {room}\n"
+            if lesson_type:
+                formatted_timetable += f"🔹 Тип: {lesson_type}\n"
+            formatted_timetable += "\n"
+    
+    return formatted_timetable
+
 
 def generate_timetable_image(timetable) -> str:
     """
@@ -642,6 +708,136 @@ async def cmd_timetable(message: types.Message):
     except Exception as e:
         await message.answer(f"Ошибка при получении расписания: {e}")
 
+async def get_timetable_api():
+    """
+    Получает или создает экземпляр BonchAPI для работы с расписанием без авторизации.
+    """
+    global timetable_api
+    if timetable_api is None:
+        # Используем дату начала семестра (можно вынести в конфигурацию)
+        # По умолчанию используем текущую дату начала семестра
+        # Можно получить из переменной окружения или использовать значение по умолчанию
+        first_day = os.getenv('FIRST_DAY', '2025-02-03')  # Пример даты
+        timetable_api = TimetableBonchAPI(first_day=first_day)
+        await timetable_api.get_schet()
+    return timetable_api
+
+@dp.message(Command("teacher_timetable"))
+async def cmd_teacher_timetable(message: types.Message):
+    """
+    Команда для получения расписания преподавателя.
+    Использование: /teacher_timetable <ID_преподавателя>
+    """
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer(
+            "Используйте: /teacher_timetable <ID_преподавателя>\n\n"
+            "Для получения списка преподавателей используйте: /teachers"
+        )
+        return
+    
+    teacher_id = args[1]
+    
+    try:
+        api = await get_timetable_api()
+        async with aiohttp.ClientSession() as session:
+            timetable = await api.get_teacher_timetable(session, teacher_id)
+        
+        if isinstance(timetable, str):
+            await message.answer(f"❌ {timetable}")
+            return
+        
+        formatted_timetable = format_timetable_dict(timetable, f"Расписание преподавателя (ID: {teacher_id})")
+        await message.answer(formatted_timetable, parse_mode="Markdown")
+    
+    except Exception as e:
+        logging.error(f"Ошибка при получении расписания преподавателя: {e}", exc_info=True)
+        await message.answer(f"Ошибка при получении расписания: {e}")
+
+@dp.message(Command("classroom_timetable"))
+async def cmd_classroom_timetable(message: types.Message):
+    """
+    Команда для получения расписания кабинета.
+    Использование: /classroom_timetable <ID_кабинета>
+    """
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer(
+            "Используйте: /classroom_timetable <ID_кабинета>\n\n"
+            "Для получения списка кабинетов используйте: /classrooms"
+        )
+        return
+    
+    classroom_id = args[1]
+    
+    try:
+        api = await get_timetable_api()
+        async with aiohttp.ClientSession() as session:
+            timetable = await api.get_classroom_timetable(session, classroom_id)
+        
+        if isinstance(timetable, str):
+            await message.answer(f"❌ {timetable}")
+            return
+        
+        formatted_timetable = format_timetable_dict(timetable, f"Расписание кабинета (ID: {classroom_id})")
+        await message.answer(formatted_timetable, parse_mode="Markdown")
+    
+    except Exception as e:
+        logging.error(f"Ошибка при получении расписания кабинета: {e}", exc_info=True)
+        await message.answer(f"Ошибка при получении расписания: {e}")
+
+@dp.message(Command("teachers"))
+async def cmd_teachers(message: types.Message):
+    """
+    Команда для получения списка преподавателей.
+    """
+    try:
+        api = await get_timetable_api()
+        await api.get_teachers()
+        
+        if not hasattr(api, 'teachers_id') or not api.teachers_id:
+            await message.answer("❌ Не удалось получить список преподавателей")
+            return
+        
+        teachers_list = "👨‍🏫 Список преподавателей:\n\n"
+        for teacher_id, teacher_name in list(api.teachers_id.items())[:50]:  # Показываем первые 50
+            teachers_list += f"ID: {teacher_id} - {teacher_name}\n"
+        
+        if len(api.teachers_id) > 50:
+            teachers_list += f"\n... и еще {len(api.teachers_id) - 50} преподавателей"
+        
+        await message.answer(teachers_list)
+    
+    except Exception as e:
+        logging.error(f"Ошибка при получении списка преподавателей: {e}", exc_info=True)
+        await message.answer(f"Ошибка при получении списка преподавателей: {e}")
+
+@dp.message(Command("classrooms"))
+async def cmd_classrooms(message: types.Message):
+    """
+    Команда для получения списка кабинетов.
+    """
+    try:
+        api = await get_timetable_api()
+        await api.get_classrooms()
+        
+        if not hasattr(api, 'classrooms_id') or not api.classrooms_id:
+            await message.answer("❌ Не удалось получить список кабинетов")
+            return
+        
+        classrooms_list = "🏫 Список кабинетов:\n\n"
+        for classroom_id, classroom_name in list(api.classrooms_id.items())[:50]:  # Показываем первые 50
+            classrooms_list += f"ID: {classroom_id} - {classroom_name}\n"
+        
+        if len(api.classrooms_id) > 50:
+            classrooms_list += f"\n... и еще {len(api.classrooms_id) - 50} кабинетов"
+        
+        await message.answer(classrooms_list)
+    
+    except Exception as e:
+        logging.error(f"Ошибка при получении списка кабинетов: {e}", exc_info=True)
+        await message.answer(f"Ошибка при получении списка кабинетов: {e}")
+
 async def auto_login_user(user_id):
     cursor.execute('SELECT email, password FROM users WHERE user_id = ?', (user_id,))
     result = cursor.fetchone()
@@ -673,7 +869,11 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="status", description="Статус автокликалки"),
         BotCommand(command="login", description="Войти в аккаунт"),
         BotCommand(command="my_account", description="Просмотреть сохраненные данные"),
-        BotCommand(command="timetable", description="Получить расписание")
+        BotCommand(command="timetable", description="Получить расписание"),
+        BotCommand(command="teacher_timetable", description="Расписание преподавателя (ID)"),
+        BotCommand(command="classroom_timetable", description="Расписание кабинета (ID)"),
+        BotCommand(command="teachers", description="Список преподавателей"),
+        BotCommand(command="classrooms", description="Список кабинетов")
     ]
     await bot.set_my_commands(commands)
 
