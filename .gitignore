@@ -2,3 +2,6 @@
 users.db
 .venv
 debug_dumps
+__pycache__/
+timetable.json
+*.pyc

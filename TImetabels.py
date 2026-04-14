@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, time
 from tqdm.asyncio import tqdm_asyncio
 from time import sleep
+import html
 
 if os.name=='nt': import msvcrt
 else: import sys, fcntl, termios
@@ -102,50 +103,6 @@ class BonchAPI:
                 groups = soup.find_all('a', class_='vt256')
                 self.groups_id = {group['href'].split('=')[-1]: group['data-nm'] for group in groups}
 
-    async def get_teachers(self):
-        """
-        Получает список преподавателей без авторизации.
-        """
-        URL = 'https://cabinet.sut.ru/raspisanie_all_new'
-
-        async with aiohttp.ClientSession() as session:
-            async with session.get(URL) as response:
-                text = await response.text()
-                soup = BeautifulSoup(text, 'html.parser')
-                
-                # Ищем select для преподавателей (обычно id='prep' или name='prep')
-                prep_select = soup.find('select', id='prep') or soup.find('select', {'name': 'prep'})
-                if prep_select:
-                    teachers = prep_select.find_all('option')
-                    self.teachers_id = {opt['value']: opt.text.strip() for opt in teachers if opt.get('value')}
-                else:
-                    # Альтернативный способ: ищем ссылки на преподавателей
-                    teacher_links = soup.find_all('a', href=re.compile(r'prep='))
-                    self.teachers_id = {link['href'].split('prep=')[-1].split('&')[0]: link.text.strip() 
-                                       for link in teacher_links if 'prep=' in link.get('href', '')}
-
-    async def get_classrooms(self):
-        """
-        Получает список кабинетов без авторизации.
-        """
-        URL = 'https://cabinet.sut.ru/raspisanie_all_new'
-
-        async with aiohttp.ClientSession() as session:
-            async with session.get(URL) as response:
-                text = await response.text()
-                soup = BeautifulSoup(text, 'html.parser')
-                
-                # Ищем select для кабинетов (обычно id='aud' или name='aud')
-                aud_select = soup.find('select', id='aud') or soup.find('select', {'name': 'aud'})
-                if aud_select:
-                    classrooms = aud_select.find_all('option')
-                    self.classrooms_id = {opt['value']: opt.text.strip() for opt in classrooms if opt.get('value')}
-                else:
-                    # Альтернативный способ: ищем ссылки на кабинеты
-                    classroom_links = soup.find_all('a', href=re.compile(r'aud='))
-                    self.classrooms_id = {link['href'].split('aud=')[-1].split('&')[0]: link.text.strip() 
-                                         for link in classroom_links if 'aud=' in link.get('href', '')}
-
     async def get_timetable(self, session: aiohttp.ClientSession, type_z: str, group_id: str) -> list:
         URL = f'https://cabinet.sut.ru/raspisanie_all_new.php?schet={self.schet}&type_z={type_z}&group={group_id}'
 
@@ -156,10 +113,17 @@ class BonchAPI:
                 soup = BeautifulSoup(text, 'html.parser')
                 table = soup.find('table', class_='simple-little-table')
                 if not table:
+                    # Логируем для отладки
+                    if group_id == '56252':
+                        print(f"DEBUG: Группа {group_id} - таблица не найдена. HTML длина: {len(text)}")
                     return 'Расписание не найдено'
 
                 timetable_data = []
                 rows = table.find('tbody').find_all('tr')[1:]
+                
+                # Логируем для отладки
+                if group_id == '56252':
+                    print(f"DEBUG: Группа {group_id} - найдено строк: {len(rows)}")
 
                 for row in rows:
                     cells = row.find_all('td')
@@ -201,206 +165,39 @@ class BonchAPI:
                             weeks_element = pair_div.find('span', class_='weeks')
                             week_number_str = weeks_element.text.strip('()').replace('н', '').replace('*', '') if weeks_element else None
 
+                            # Инициализируем weeks_list пустым списком по умолчанию
+                            weeks_list = []
                             if week_number_str:
-                                weeks_list = [week.strip() for week in week_number_str.split(',')]
-                            else:
-                                weeks_list = []
+                                weeks_list = [week.strip() for week in week_number_str.split(',') if week.strip()]
 
-                            for week_str in weeks_list:
-                                week_number = int(week_str)
-                                lesson_date = self.first_day + timedelta(days=week_number * 7 + day_of_week_int)
+                            # Обрабатываем только если есть недели
+                            if weeks_list:
+                                for week_str in weeks_list:
+                                    try:
+                                        week_number = int(week_str)
+                                        lesson_date = self.first_day + timedelta(days=week_number * 7 + day_of_week_int)
 
-                                timetable_data.append({
-                                    'Группа': self.groups_id[group_id],
-                                    'Число': lesson_date.strftime('%Y.%m.%d'),
-                                    'День недели': day_name,
-                                    'Номер недели': week_number,
-                                    'Номер дня недели': day_of_week_int,
-                                    'Номер занятия': lesson_number,
-                                    'Время занятия': lesson_time,
-                                    'Предмет': subject,
-                                    'Тип занятия': lesson_type,
-                                    'ФИО преподавателя': teacher,
-                                    'Номер кабинета': room,
-                                })
-                return sorted(timetable_data, key=lambda x: (x['Номер недели'], x['Номер дня недели']))
-        except Exception as e:
-            return 'Ошибка сервера'
-
-    async def get_teacher_timetable(self, session: aiohttp.ClientSession, teacher_id: str) -> list:
-        """
-        Получает расписание преподавателя без авторизации.
-        type_z='2' используется для преподавателей.
-        """
-        URL = f'https://cabinet.sut.ru/raspisanie_all_new.php?schet={self.schet}&type_z=2&prep={teacher_id}'
-
-        try:
-            async with session.get(URL) as response:
-                text = await response.text()
-
-                soup = BeautifulSoup(text, 'html.parser')
-                table = soup.find('table', class_='simple-little-table')
-                if not table:
-                    return 'Расписание не найдено'
-
-                timetable_data = []
-                rows = table.find('tbody').find_all('tr')[1:]
-
-                for row in rows:
-                    cells = row.find_all('td')
-                    if not cells:
-                        continue
-
-                    lesson_number_cell = cells[0]
-                    lesson_number_text = lesson_number_cell.text.strip()
-                    lesson_number_parts = lesson_number_text.split()
-                    lesson_number = lesson_number_parts[0] if lesson_number_parts else None
-
-                    lesson_time = None
-                    if lesson_number == '7':
-                        lesson_time = '20:00-21:35'
-                    elif len(lesson_number_parts) > 1:
-                        lesson_time = lesson_number_parts[1][1:-1]
-
-                    for day_index, cell in enumerate(cells[1:]):
-                        pair_divs = cell.find_all('div', class_='pair')
-                        if not pair_divs:
-                            continue
-
-                        day_name = self.days_of_week[day_index]
-                        day_of_week_int = self.days_of_week_str_to_int[day_name]
-
-                        for pair_div in pair_divs:
-                            subject_element = pair_div.find('span', class_='subect')
-                            subject = subject_element.strong.text.strip() if subject_element and subject_element.strong else None
-
-                            type_element = pair_div.find('span', class_='type')
-                            lesson_type = type_element.text.strip('()') if type_element else None
-
-                            teacher_element = pair_div.find('span', class_='teacher')
-                            teacher = teacher_element.text.strip() if teacher_element else None
-
-                            room_element = pair_div.find('span', class_='aud')
-                            room = room_element.text.split(':')[1].strip().replace('; Б22', '') if room_element and ':' in room_element.text else None
-
-                            weeks_element = pair_div.find('span', class_='weeks')
-                            week_number_str = weeks_element.text.strip('()').replace('н', '').replace('*', '') if weeks_element else None
-
-                            # Получаем группу из расписания преподавателя
-                            group_element = pair_div.find('span', class_='group')
-                            group_name = group_element.text.strip() if group_element else None
-
-                            if week_number_str:
-                                weeks_list = [week.strip() for week in week_number_str.split(',')]
-                            else:
-                                weeks_list = []
-
-                            for week_str in weeks_list:
-                                week_number = int(week_str)
-                                lesson_date = self.first_day + timedelta(days=week_number * 7 + day_of_week_int)
-
-                                timetable_data.append({
-                                    'Группа': group_name,
-                                    'Число': lesson_date.strftime('%Y.%m.%d'),
-                                    'День недели': day_name,
-                                    'Номер недели': week_number,
-                                    'Номер дня недели': day_of_week_int,
-                                    'Номер занятия': lesson_number,
-                                    'Время занятия': lesson_time,
-                                    'Предмет': subject,
-                                    'Тип занятия': lesson_type,
-                                    'ФИО преподавателя': teacher,
-                                    'Номер кабинета': room,
-                                })
-                return sorted(timetable_data, key=lambda x: (x['Номер недели'], x['Номер дня недели']))
-        except Exception as e:
-            return 'Ошибка сервера'
-
-    async def get_classroom_timetable(self, session: aiohttp.ClientSession, classroom_id: str) -> list:
-        """
-        Получает расписание кабинета без авторизации.
-        type_z='3' используется для кабинетов.
-        """
-        URL = f'https://cabinet.sut.ru/raspisanie_all_new.php?schet={self.schet}&type_z=3&aud={classroom_id}'
-
-        try:
-            async with session.get(URL) as response:
-                text = await response.text()
-
-                soup = BeautifulSoup(text, 'html.parser')
-                table = soup.find('table', class_='simple-little-table')
-                if not table:
-                    return 'Расписание не найдено'
-
-                timetable_data = []
-                rows = table.find('tbody').find_all('tr')[1:]
-
-                for row in rows:
-                    cells = row.find_all('td')
-                    if not cells:
-                        continue
-
-                    lesson_number_cell = cells[0]
-                    lesson_number_text = lesson_number_cell.text.strip()
-                    lesson_number_parts = lesson_number_text.split()
-                    lesson_number = lesson_number_parts[0] if lesson_number_parts else None
-
-                    lesson_time = None
-                    if lesson_number == '7':
-                        lesson_time = '20:00-21:35'
-                    elif len(lesson_number_parts) > 1:
-                        lesson_time = lesson_number_parts[1][1:-1]
-
-                    for day_index, cell in enumerate(cells[1:]):
-                        pair_divs = cell.find_all('div', class_='pair')
-                        if not pair_divs:
-                            continue
-
-                        day_name = self.days_of_week[day_index]
-                        day_of_week_int = self.days_of_week_str_to_int[day_name]
-
-                        for pair_div in pair_divs:
-                            subject_element = pair_div.find('span', class_='subect')
-                            subject = subject_element.strong.text.strip() if subject_element and subject_element.strong else None
-
-                            type_element = pair_div.find('span', class_='type')
-                            lesson_type = type_element.text.strip('()') if type_element else None
-
-                            teacher_element = pair_div.find('span', class_='teacher')
-                            teacher = teacher_element.text.strip() if teacher_element else None
-
-                            room_element = pair_div.find('span', class_='aud')
-                            room = room_element.text.split(':')[1].strip().replace('; Б22', '') if room_element and ':' in room_element.text else None
-
-                            # Получаем группу из расписания кабинета
-                            group_element = pair_div.find('span', class_='group')
-                            group_name = group_element.text.strip() if group_element else None
-
-                            weeks_element = pair_div.find('span', class_='weeks')
-                            week_number_str = weeks_element.text.strip('()').replace('н', '').replace('*', '') if weeks_element else None
-
-                            if week_number_str:
-                                weeks_list = [week.strip() for week in week_number_str.split(',')]
-                            else:
-                                weeks_list = []
-
-                            for week_str in weeks_list:
-                                week_number = int(week_str)
-                                lesson_date = self.first_day + timedelta(days=week_number * 7 + day_of_week_int)
-
-                                timetable_data.append({
-                                    'Группа': group_name,
-                                    'Число': lesson_date.strftime('%Y.%m.%d'),
-                                    'День недели': day_name,
-                                    'Номер недели': week_number,
-                                    'Номер дня недели': day_of_week_int,
-                                    'Номер занятия': lesson_number,
-                                    'Время занятия': lesson_time,
-                                    'Предмет': subject,
-                                    'Тип занятия': lesson_type,
-                                    'ФИО преподавателя': teacher,
-                                    'Номер кабинета': room,
-                                })
+                                        timetable_data.append({
+                                            'Группа': self.groups_id[group_id],
+                                            'Число': lesson_date.strftime('%Y.%m.%d'),
+                                            'День недели': day_name,
+                                            'Номер недели': week_number,
+                                            'Номер дня недели': day_of_week_int,
+                                            'Номер занятия': lesson_number,
+                                            'Время занятия': lesson_time,
+                                            'Предмет': subject,
+                                            'Тип занятия': lesson_type,
+                                            'ФИО преподавателя': teacher,
+                                            'Номер кабинета': room,
+                                        })
+                                    except (ValueError, TypeError):
+                                        # Пропускаем некорректные номера недель
+                                        continue
+                
+                # Логируем для отладки
+                if group_id == '56252':
+                    print(f"DEBUG: Группа {group_id} - итого занятий: {len(timetable_data)}")
+                
                 return sorted(timetable_data, key=lambda x: (x['Номер недели'], x['Номер дня недели']))
         except Exception as e:
             return 'Ошибка сервера'
@@ -653,9 +450,345 @@ class BonchAPI:
             elif inp in [b'M', b'\x1b[C']: self.cur_week = self.cur_week + 1 if self.cur_week < 50 else self.cur_week
         self.set_current_week()
 
+    async def messages_interface(self):
+        """Интерфейс для просмотра сообщений"""
+        if not hasattr(self, 'email') or not hasattr(self, 'password'):
+            print('Для просмотра сообщений требуются login и password в конфигурации\n')
+            input('Нажмите Enter для продолжения...')
+            return
+        
+        # Авторизация
+        response = False
+        while not response:
+            response = await self.login(self.email, self.password)
+            if not response:
+                print('Ошибка авторизации. Проверьте логин и пароль.\n')
+                input('Нажмите Enter для продолжения...')
+                return
+        
+        self.cls()
+        messages = await self.get_messages()
+        
+        if not messages:
+            print('Нет входящих сообщений\n')
+            input('Нажмите Enter для продолжения...')
+            return
+        
+        selected_index = 0
+        inp = b'-'
+        
+        while inp != b'\x1b':
+            self.cls()
+            print('Входящие сообщения:\n')
+            for i, msg in enumerate(messages):
+                marker = '>>>' if i == selected_index else '   '
+                unread_marker = ' [НЕПРОЧИТАНО]' if msg.get('is_unread', False) else ''
+                files_marker = ' [ФАЙЛЫ]' if msg.get('has_files', False) else ''
+                date = msg.get('date', '')[:10] if msg.get('date') else ''
+                sender_short = msg.get('sender', '')[:30] if msg.get('sender') else ''
+                if sender_short and '(' in sender_short:
+                    sender_short = sender_short.split('(')[0].strip()
+                
+                title = msg.get('title', 'Без названия')[:50]
+                if len(msg.get('title', '')) > 50:
+                    title += '...'
+                
+                print(f'{marker} [{i+1}] {date} | {sender_short}')
+                print(f'     {title}{unread_marker}{files_marker}')
+                if i < len(messages) - 1:
+                    print()
+            
+            print('\n[Enter] - открыть сообщение')
+            print('[↑/↓ или k/j] - выбрать сообщение')
+            print('[Esc] - выйти')
+            
+            inp = self.wait_key()
+            
+            if inp == b'\r' or inp == b'\n':  # Enter
+                if 0 <= selected_index < len(messages):
+                    message_id = messages[selected_index]['id']
+                    self.cls()
+                    print('Загрузка сообщения...\n')
+                    message = await self.get_message(message_id)
+                    
+                    if message:
+                        self.cls()
+                        selected_msg = messages[selected_index]
+                        print('=' * 80)
+                        print(f'Название: {message.get("name", selected_msg.get("title", "Без названия"))}')
+                        print('=' * 80)
+                        print(f'Дата: {selected_msg.get("date", "Не указана")}')
+                        print(f'Отправитель: {selected_msg.get("sender", "Неизвестно")}')
+                        print('-' * 80)
+                        annotation = message.get("annotation", "Нет текста")
+                        # Удаляем HTML теги и декодируем сущности
+                        if annotation:
+                            annotation = html.unescape(annotation)
+                            # Простое удаление HTML тегов
+                            annotation = re.sub(r'<[^>]+>', '', annotation)
+                        print(f'\n{annotation}\n')
+                        print('-' * 80)
+                        if selected_msg.get("files"):
+                            print('Файлы:')
+                            for file_info in selected_msg["files"]:
+                                print(f'  - {file_info.get("name", "Файл")}')
+                                if file_info.get("url"):
+                                    print(f'    URL: {file_info["url"]}')
+                        elif message.get("files"):
+                            print(f'Файлы: {message.get("files")}')
+                        print('-' * 80)
+                        print(f'ID: {message.get("id", message_id)}')
+                        print(f'Тип документа: {message.get("viddok", "Не указан")}')
+                        print('=' * 80)
+                    else:
+                        print('Не удалось загрузить сообщение\n')
+                    
+                    input('\nНажмите Enter для продолжения...')
+            
+            elif (inp in [b'K', b'\x1b[D', b'\x1b[A']) or (inp == b'k'):  # Стрелка вверх или 'k'
+                selected_index = max(0, selected_index - 1)
+            elif (inp in [b'M', b'\x1b[C', b'\x1b[B']) or (inp == b'j'):  # Стрелка вниз или 'j'
+                selected_index = min(len(messages) - 1, selected_index + 1)
+
     def change_group_name(self, timetable: dict, group_name: str):
         if group_name in timetable: self.group_name = group_name
         elif self.group_name not in timetable: self.group_name = next(iter(timetable.keys()))
+
+    async def get_messages(self) -> list:
+        """Получить список входящих сообщений со всех страниц"""
+        BASE_URL = 'https://lk.sut.ru/cabinet/project/cabinet/forms/message.php'
+        
+        if not hasattr(self, 'cookies'):
+            if not hasattr(self, 'email') or not hasattr(self, 'password'):
+                print("DEBUG: Нет cookies и нет email/password")
+                return []
+            response = False
+            while not response:
+                response = await self.login(self.email, self.password)
+        
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(10)) as session:
+                # Добавляем заголовки, чтобы имитировать браузер
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Referer': 'https://lk.sut.ru/cabinet/',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1'
+                }
+                
+                # Сначала заходим на главную страницу кабинета для инициализации сессии
+                cabinet_url = 'https://lk.sut.ru/cabinet/'
+                async with session.get(cabinet_url, cookies=self.cookies, headers=headers) as cab_response:
+                    cab_response.raise_for_status()
+                
+                # Загружаем первую страницу для определения общего количества страниц
+                first_page_url = f'{BASE_URL}?type=in'
+                async with session.get(first_page_url, cookies=self.cookies, headers=headers) as response:
+                    response.raise_for_status()
+                    text = await response.text()
+                    
+                    # Если получили ошибку PHP, возвращаем пустой список
+                    if 'ERRNO:' in text or 'Undefined index' in text:
+                        print("DEBUG: Обнаружена ошибка PHP на первой странице")
+                        return []
+                    
+                    soup = BeautifulSoup(text, 'html.parser')
+                    
+                    # Определяем общее количество страниц
+                    # Ищем информацию о пагинации (например, "1-20 из 658")
+                    total_pages = 1
+                    pagination_info = soup.find('center')
+                    if pagination_info:
+                        pagination_text = pagination_info.get_text()
+                        # Ищем паттерн типа "1-20 из 658" или ссылки на последнюю страницу
+                        import re
+                        # Ищем ссылку на последнюю страницу типа ">>" или номер последней страницы
+                        last_page_link = pagination_info.find('a', onclick=lambda x: x and 'page=' in str(x) and '>>' in str(x) if x else False)
+                        if last_page_link:
+                            # Извлекаем номер страницы из onclick
+                            onclick = last_page_link.get('onclick', '')
+                            page_match = re.search(r'page=(\d+)', onclick)
+                            if page_match:
+                                total_pages = int(page_match.group(1))
+                        else:
+                            # Пытаемся найти из текста "1-20 из 658"
+                            match = re.search(r'(\d+)-(\d+)\s+из\s+(\d+)', pagination_text)
+                            if match:
+                                total_items = int(match.group(3))
+                                items_per_page = 20
+                                total_pages = (total_items + items_per_page - 1) // items_per_page
+                    
+                    print(f"DEBUG: Найдено страниц: {total_pages}")
+                    
+                    # Собираем сообщения со всех страниц
+                    all_messages = []
+                    
+                    for page in range(1, total_pages + 1):
+                        if page == 1:
+                            # Первую страницу уже загрузили
+                            page_text = text
+                        else:
+                            # Загружаем остальные страницы
+                            page_url = f'{BASE_URL}?page={page}&type=in'
+                            async with session.get(page_url, cookies=self.cookies, headers=headers) as page_response:
+                                page_response.raise_for_status()
+                                page_text = await page_response.text()
+                                
+                                if 'ERRNO:' in page_text or 'Undefined index' in page_text:
+                                    print(f"DEBUG: Ошибка на странице {page}, пропускаем")
+                                    continue
+                        
+                        page_soup = BeautifulSoup(page_text, 'html.parser')
+                        
+                        # Ищем таблицу с сообщениями
+                        table = page_soup.find('table', id='mytable')
+                        if not table:
+                            print(f"DEBUG: Таблица не найдена на странице {page}")
+                            continue
+                        
+                        # Ищем все строки с id начинающимся с "tr_"
+                        rows = table.find_all('tr', id=lambda x: x and x.startswith('tr_'))
+                        print(f"DEBUG: Страница {page}: найдено {len(rows)} сообщений")
+                        
+                        for row in rows:
+                            try:
+                                # Извлекаем ID из id атрибута (tr_3737509 -> 3737509)
+                                row_id = row.get('id', '')
+                                if not row_id.startswith('tr_'):
+                                    continue
+                                
+                                message_id = row_id.replace('tr_', '')
+                                
+                                # Извлекаем данные из ячеек
+                                cells = row.find_all('td')
+                                if len(cells) < 4:
+                                    continue
+                                
+                                # Дата из первой ячейки
+                                date_cell = cells[0]
+                                date_text = date_cell.get_text(strip=True)
+                                
+                                # Тема из второй ячейки (пропускаем изображение)
+                                theme_cell = cells[1]
+                                
+                                # Используем stripped_strings - это дает все текстовые узлы, игнорируя теги
+                                # Это работает даже если текст находится после img тега
+                                text_parts = list(theme_cell.stripped_strings)
+                                
+                                # Фильтруем - убираем пустые строки и текст, который может быть в атрибутах
+                                filtered_parts = []
+                                for part in text_parts:
+                                    part = part.strip()
+                                    # Пропускаем очень короткие строки, которые могут быть артефактами
+                                    if part and len(part) > 1:
+                                        filtered_parts.append(part)
+                                
+                                # Объединяем части
+                                title = ' '.join(filtered_parts).strip() if filtered_parts else ''
+                                
+                                if not title:
+                                    title = 'Без названия'
+                                
+                                # Файлы из третьей ячейки
+                                files_cell = cells[2]
+                                files = []
+                                for file_link in files_cell.find_all('a', href=True):
+                                    file_name = file_link.get_text(strip=True)
+                                    file_url = file_link.get('href', '')
+                                    if file_name:
+                                        files.append({'name': file_name, 'url': file_url})
+                                
+                                # Отправитель из четвертой ячейки
+                                sender_cell = cells[3]
+                                sender = sender_cell.get_text(strip=True) or 'Неизвестно'
+                                
+                                # Проверяем, является ли сообщение непрочитанным (жирный шрифт)
+                                row_style = row.get('style', '')
+                                is_unread = 'font-weight: bold' in row_style or 'font-weight:bold' in row_style.replace(' ', '')
+                                
+                                all_messages.append({
+                                    'id': message_id,
+                                    'title': title,
+                                    'date': date_text,
+                                    'sender': sender,
+                                    'files': files,
+                                    'has_files': len(files) > 0,
+                                    'is_unread': is_unread
+                                })
+                            except Exception as e:
+                                print(f"DEBUG: Ошибка при парсинге строки на странице {page}: {e}")
+                                continue
+                    
+                    print(f"DEBUG: Итого найдено сообщений со всех страниц: {len(all_messages)}")
+                    return all_messages
+        except Exception as e:
+            print(f'Ошибка при получении сообщений: {e}')
+            import traceback
+            traceback.print_exc()
+            return []
+
+    async def get_message(self, message_id: str) -> dict:
+        """Получить конкретное сообщение по ID"""
+        URL = 'https://lk.sut.ru/cabinet/project/cabinet/forms/sendto2.php'
+        
+        if not hasattr(self, 'cookies'):
+            if not hasattr(self, 'email') or not hasattr(self, 'password'):
+                return {}
+            response = False
+            while not response:
+                response = await self.login(self.email, self.password)
+        
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(10)) as session:
+                data = {
+                    'id': message_id,
+                    'prosmotr': ''
+                }
+                async with session.post(URL, cookies=self.cookies, data=data) as response:
+                    response.raise_for_status()
+                    text = await response.text()
+                    
+                    # Парсим JSON ответ
+                    try:
+                        message_data = json.loads(text)
+                        # Декодируем HTML сущности в текстовых полях
+                        if 'annotation' in message_data:
+                            message_data['annotation'] = html.unescape(message_data['annotation'])
+                        if 'name' in message_data:
+                            message_data['name'] = html.unescape(message_data['name'])
+                        return message_data
+                    except json.JSONDecodeError:
+                        # Если это не JSON, пытаемся парсить HTML
+                        soup = BeautifulSoup(text, 'html.parser')
+                        message_data = {
+                            'id': message_id,
+                            'annotation': '',
+                            'name': '',
+                            'viddok': '',
+                            'otvet': 0,
+                            'idinfo': 0,
+                            'files': '',
+                            'sendto': message_id,
+                            'otpr': 0,
+                            'history': 0
+                        }
+                        
+                        # Пытаемся извлечь данные из HTML
+                        name_elem = soup.find('input', {'name': 'name'}) or soup.find('h2') or soup.find('h3')
+                        if name_elem:
+                            message_data['name'] = name_elem.get('value', '') or name_elem.text.strip()
+                        
+                        annotation_elem = soup.find('textarea', {'name': 'annotation'}) or soup.find('div', class_='annotation')
+                        if annotation_elem:
+                            message_data['annotation'] = annotation_elem.get('value', '') or annotation_elem.text.strip()
+                        
+                        return message_data
+        except Exception as e:
+            print(f'Ошибка при получении сообщения: {e}')
+            return {}
 
     async def crush_request(self, session: aiohttp.ClientSession, type_z: str, group_id: str):
         URL = f'https://lk.sut.ru/cabinet/project/cabinet/forms/raspisanie_all.php?schet={self.schet}&type_z={type_z}&group={group_id}'
@@ -770,6 +903,7 @@ async def main():
             print(f'[3] - получить расписание кабинета')
             print(f'[4] - изменить группу (текущая: {api.group_name})')
             print(f'[5] - положить lk.sut (ахаха)')
+            print(f'[6] - просмотр сообщений')
             print(f'[Esc] - выйти')
             inp = BonchAPI.wait_key()
             BonchAPI.cls()
@@ -787,6 +921,9 @@ async def main():
                 BonchAPI.cls()
             elif inp == b'5':
                 api.crush_lk_interface()
+            elif inp == b'6':
+                await api.messages_interface()
+                BonchAPI.cls()
 
 if __name__ == '__main__':
     asyncio.run(main())

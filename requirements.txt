@@ -2,4 +2,6 @@ aiogram
 python-dotenv
 bonchapi
 pytz
-pillow
+pillow>=10.0.0
+tqdm
+aiohttp-socks

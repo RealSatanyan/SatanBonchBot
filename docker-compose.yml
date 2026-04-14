@@ -1,12 +1,11 @@
-version: '3.8'
-
 services:
   bot:
     build: .
     container_name: telegram_bot
     restart: unless-stopped
     environment:
-      - BOT_TOKEN=${BOT_TOKEN}  # Используем переменные окружения из .env
+      - BOT_TOKEN=${BOT_TOKEN}    # Используем переменные окружения из .env
+      - ALL_PROXY=${ALL_PROXY}    # Прокси только для Telegram (используется в main.py)
     volumes:
       - .:/app  # Монтируем текущую директорию для разработки
     # logging:
