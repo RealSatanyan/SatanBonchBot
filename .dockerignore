@@ -1,0 +1,35 @@
+# Секреты — никогда не должны попадать в слои образа.
+# В рантайме .env и users.db приходят через volume-монтирование (docker-compose.yml).
+.env
+.env.*
+users.db
+users.db.bak*
+
+# VCS и кеши Python
+.git/
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+
+# Отладочные дампы и сгенерированные артефакты (создаются в рантайме)
+debug_dumps/
+timetable.json
+timetable.png
+
+# Документация и планы — для рантайма не нужны
+plans/
+README.md
+
+# Тесты и их артефакты — в рантайме не нужны.
+# ВАЖНО: parsers.py и migrate_passwords.py НЕ игнорируем — они нужны боту.
+tests/
+conftest.py
+pytest.ini
+requirements-dev.txt
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Шрифты (*.ttf/*.otf) НЕ игнорируем — Dockerfile копирует их явно,
+# они нужны для рендера timetable.png.

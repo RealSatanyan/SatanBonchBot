@@ -1,7 +1,37 @@
+# --- Секреты ---
 .env
+.env.*
+!.env.example
+
+# --- Данные пользователей и БД ---
 users.db
-.venv
-debug_dumps
-__pycache__/
+users.db-journal
+users.db.bak*
+
+# --- Генерируемые в рантайме артефакты ---
+# timetable.json — кэш расписания всех групп
+# timetable.png  — отрисованная картинка расписания
+# debug_dumps/   — HTML-дампы страниц ЛК для отладки парсеров
 timetable.json
-*.pyc
+timetable.png
+debug_dumps/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- Тесты и покрытие ---
+.coverage
+.coverage.*
+.pytest_cache/
+htmlcov/
+
+# --- Редакторы и ОС ---
+.vscode/
+.idea/
+.DS_Store
+*.swp
