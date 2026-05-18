@@ -1,38 +1,16 @@
+"""SatanBonchBot — точка входа.
+
+После декомпозиции (задача 4.1) main.py — тонкий оркестратор: импортирует
+модули-фасады (config / db / security / lk_client / handlers и т.д.),
+регистрирует роутеры обработчиков и запускает polling. Прикладная логика —
+в этих модулях; main.py реэкспортит их публичные имена ради обратной
+совместимости (`main.X`) и тестов.
+"""
 import asyncio
 import logging
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-import aiohttp
-import aiofiles
-from bonchapi import BonchAPI, parser  # Импортируем ваш API
-import sqlite3
-from contextlib import closing
-from dotenv import load_dotenv
-from datetime import datetime, time, timedelta
-from pathlib import Path
-from aiogram.types import InputFile
-from aiogram.types import FSInputFile
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.client.session.aiohttp import AiohttpSession
-from PIL import Image, ImageDraw, ImageFont
-import pytz
-import os
-import sys
-import json
-from aiogram.types import BotCommand
-from typing import Optional
-import html
-import re
-import time as time_module
-from bs4 import BeautifulSoup
 import random
-from yarl import URL as YarlURL
-from cryptography.fernet import Fernet, InvalidToken
-import parsers
+from aiogram import Bot, Dispatcher
+from aiogram.types import BotCommand
 
 # Конфигурация извлечена в config.py (задача 4.1, шаг 1). main.py остаётся
 # фасадом — реэкспортит перенесённые имена, чтобы main.X и тесты работали.
@@ -116,15 +94,6 @@ from rendering import (
     draw_lesson,
     draw_text_with_emoji,
 )
-
-# Импорт для работы с расписанием без авторизации
-try:
-    from TImetabels import BonchAPI as TimetableBonchAPI, BROWSER_HEADERS
-except ImportError:
-    # Если импорт не работает, используем альтернативный путь
-    import sys
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from TImetabels import BonchAPI as TimetableBonchAPI, BROWSER_HEADERS
 
 # Клиент личного кабинета ЛК извлечён в lk_client.py (задача 4.1, шаг 10).
 # main.py остаётся фасадом — реэкспортит публичные имена (DebuggableBonchAPI,
