@@ -151,13 +151,11 @@ from lesson_controller import LessonController
 # decrypt_password) извлечено в security.py — реэкспортируется выше.
 
 
-# Telegram-сессия БЕЗ прокси.
-tg_session = AiohttpSession()
 # Соединение с БД (conn/cursor), схема и миграции извлечены в db.py — импорт db
 # выше уже выполнил их side-effects. Доступ к курсору: db.cursor / db.conn.
 
-bot = Bot(token=BOT_TOKEN, session=tg_session)
-dp = Dispatcher()
+# bot / dp / tg_session извлечены в botcore.py (задача 4.1, шаг 12a).
+from botcore import bot, dp, tg_session
 
 # Реестр контроллеров `controllers` извлечён в lesson_controller.py (задача 4.1,
 # шаг 11). Доступ — через lesson_controller.controllers (модуль-квалифицированно).
