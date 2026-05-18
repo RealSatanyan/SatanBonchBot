@@ -92,6 +92,16 @@ from monitoring import (
     _alert_admins_parser_broken,
     _note_parser_failure,
 )
+import timetable_cache
+from timetable_cache import *
+from timetable_cache import (
+    _write_timetable_meta,
+    _read_timetable_meta,
+    _timetable_age_seconds,
+    _is_timetable_stale,
+    _format_cache_age,
+    _timetable_cache_age_now,
+)
 
 # Импорт для работы с расписанием без авторизации
 try:
@@ -2531,70 +2541,8 @@ async def progress_updater():
                     logging.error(f"Ошибка при отправке прогресса пользователю {user_id}: {e}")
 
 # --- TTL-кэш расписания групп ------------------------------------------------
-# timetable.json (~58 МБ) формат не трогаем — метаданные пишем в sidecar-файл.
-# Если кэш старше TTL, при запросе группы он обновляется в фоне, а пользователю
-# сразу отдаются текущие (пусть и слегка устаревшие) данные.
-TIMETABLE_META_FILE = Path("timetable.meta.json")
-try:
-    TIMETABLE_TTL_HOURS = float(os.getenv("TIMETABLE_TTL_HOURS", "6"))
-except ValueError:
-    TIMETABLE_TTL_HOURS = 6.0
-
-
-def _write_timetable_meta(fetched_at: datetime, path: Path = TIMETABLE_META_FILE) -> None:
-    """Записывает метку времени загрузки расписания в sidecar-файл."""
-    try:
-        path.write_text(
-            json.dumps({"fetched_at": fetched_at.isoformat()}),
-            encoding="utf-8",
-        )
-    except Exception:
-        logging.warning("Не удалось записать %s", path, exc_info=True)
-
-
-def _read_timetable_meta(path: Path = TIMETABLE_META_FILE) -> Optional[dict]:
-    """Читает sidecar с метаданными расписания. None — нет файла / битый."""
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-
-
-def _timetable_age_seconds(meta: Optional[dict], now: datetime) -> Optional[float]:
-    """Возраст кэша расписания в секундах. None — нет валидной метки."""
-    if not meta or "fetched_at" not in meta:
-        return None
-    try:
-        fetched_at = datetime.fromisoformat(meta["fetched_at"])
-        return (now - fetched_at).total_seconds()
-    except (ValueError, TypeError):
-        return None
-
-
-def _is_timetable_stale(age_seconds: Optional[float], ttl_hours: float) -> bool:
-    """Кэш устарел? Отсутствие метки (None) считаем устаревшим."""
-    if age_seconds is None:
-        return True
-    return age_seconds > ttl_hours * 3600
-
-
-def _format_cache_age(age_seconds: Optional[float]) -> str:
-    """Человекочитаемый возраст кэша: «5 мин назад», «3 ч назад»."""
-    if age_seconds is None:
-        return "время неизвестно"
-    if age_seconds < 60:
-        return "только что"
-    minutes = int(age_seconds // 60)
-    if minutes < 60:
-        return f"{minutes} мин назад"
-    hours = int(age_seconds // 3600)
-    return f"{hours} ч назад"
-
-
-def _timetable_cache_age_now() -> Optional[float]:
-    """Возраст кэша расписания на текущий момент (по московскому времени)."""
-    now = datetime.now(pytz.timezone("Europe/Moscow"))
-    return _timetable_age_seconds(_read_timetable_meta(), now)
+# TTL-хелперы вынесены в timetable_cache.py (задача 4.1, шаг 7), доступны здесь
+# через реэкспорт. Сервис загрузки расписания остаётся в main.py.
 
 
 async def _refresh_timetable_quietly() -> None:
