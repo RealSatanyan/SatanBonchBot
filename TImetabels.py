@@ -500,123 +500,75 @@ class BonchAPI:
         if group_name in timetable: self.group_name = group_name
         elif self.group_name not in timetable: self.group_name = next(iter(timetable.keys()))
 
-    async def get_messages(self) -> list:
-        """Получить список входящих сообщений со всех страниц"""
+    async def get_messages_page(self, page: int = 1) -> dict:
+        """
+        Загружает ОДНУ страницу входящих сообщений (~20 шт).
+        Возвращает {'messages': [...], 'total_pages': int}.
+
+        Постраничная загрузка нужна для ленивой подгрузки в боте: страница 1
+        отдаётся сразу, остальные — по мере листания. Куки/сессия
+        переиспользуются между вызовами.
+        """
         BASE_URL = 'https://lk.sut.ru/cabinet/project/cabinet/forms/message.php'
-        
+        empty = {'messages': [], 'total_pages': 1}
+
         if not hasattr(self, 'cookies'):
             if not hasattr(self, 'email') or not hasattr(self, 'password'):
                 logging.warning("Нет cookies и нет email/password — не могу получить сообщения")
-                return []
+                return empty
             response = False
             while not response:
                 response = await self.login(self.email, self.password)
-        
+
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Referer': 'https://lk.sut.ru/cabinet/',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        }
+        page = max(1, page)
+        page_url = f'{BASE_URL}?type=in' if page == 1 else f'{BASE_URL}?page={page}&type=in'
+
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(40), trust_env=True, headers=BROWSER_HEADERS, connector=aiohttp.TCPConnector(force_close=True)) as session:
-                # Добавляем заголовки, чтобы имитировать браузер
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
-                    'Accept-Encoding': 'gzip, deflate, br',
-                    'Referer': 'https://lk.sut.ru/cabinet/',
-                    'Connection': 'keep-alive',
-                    'Upgrade-Insecure-Requests': '1'
-                }
-                
-                # Сначала заходим на главную страницу кабинета для инициализации сессии.
-                # Шаг необязательный — если не удался, продолжаем (куки уже есть после login).
-                cabinet_url = 'https://lk.sut.ru/cabinet/'
-                try:
-                    async with session.get(cabinet_url, cookies=self.cookies, headers=headers) as cab_response:
-                        cab_response.raise_for_status()
-                except Exception as e:
-                    logging.debug("Инициализация кабинета пропущена: %s", e)
-                
-                # Загружаем первую страницу для определения общего количества страниц
-                first_page_url = f'{BASE_URL}?type=in'
-                async with session.get(first_page_url, cookies=self.cookies, headers=headers) as response:
+                # Прогрев сессии — только для первой страницы (необязательный шаг).
+                if page == 1:
+                    try:
+                        async with session.get('https://lk.sut.ru/cabinet/', cookies=self.cookies, headers=headers) as cab_response:
+                            cab_response.raise_for_status()
+                    except Exception as e:
+                        logging.debug("Инициализация кабинета пропущена: %s", e)
+
+                async with session.get(page_url, cookies=self.cookies, headers=headers) as response:
                     response.raise_for_status()
                     text = await response.text()
-                    
-                    # Если получили ошибку PHP, возвращаем пустой список
-                    if 'ERRNO:' in text or 'Undefined index' in text:
-                        logging.warning("Обнаружена ошибка PHP на первой странице сообщений")
-                        return []
-                    
-                    soup = BeautifulSoup(text, 'html.parser')
-                    
-                    # Определяем общее количество страниц
-                    # Ищем информацию о пагинации (например, "1-20 из 658")
-                    total_pages = 1
-                    pagination_info = soup.find('center')
-                    if pagination_info:
-                        pagination_text = pagination_info.get_text()
-                        # Ищем паттерн типа "1-20 из 658" или ссылки на последнюю страницу
-                        import re
-                        # Ищем ссылку на последнюю страницу типа ">>" или номер последней страницы
-                        last_page_link = pagination_info.find('a', onclick=lambda x: x and 'page=' in str(x) and '>>' in str(x) if x else False)
-                        if last_page_link:
-                            # Извлекаем номер страницы из onclick
-                            onclick = last_page_link.get('onclick', '')
-                            page_match = re.search(r'page=(\d+)', onclick)
-                            if page_match:
-                                total_pages = int(page_match.group(1))
-                        else:
-                            # Пытаемся найти из текста "1-20 из 658"
-                            match = re.search(r'(\d+)-(\d+)\s+из\s+(\d+)', pagination_text)
-                            if match:
-                                total_items = int(match.group(3))
-                                items_per_page = 20
-                                total_pages = (total_items + items_per_page - 1) // items_per_page
-                    
-                    logging.debug("Найдено страниц: %s", total_pages)
 
-                    # Страницы 2..N грузим конкурентно (раньше — последовательно,
-                    # ~35 страниц давали 30-60 сек ожидания). Семафор ограничивает
-                    # число одновременных запросов к ЛК, чтобы не ловить антибот.
-                    page_semaphore = asyncio.Semaphore(5)
+            if 'ERRNO:' in text or 'Undefined index' in text:
+                logging.warning("Ошибка PHP на странице %s сообщений", page)
+                return empty
 
-                    async def fetch_message_page(page: int):
-                        """Грузит одну страницу сообщений с повтором при сбоях сети/прокси."""
-                        page_url = f'{BASE_URL}?page={page}&type=in'
-                        async with page_semaphore:
-                            for attempt in range(3):
-                                try:
-                                    async with session.get(page_url, cookies=self.cookies, headers=headers) as page_response:
-                                        page_response.raise_for_status()
-                                        return await page_response.text()
-                                except Exception as e:
-                                    if attempt + 1 < 3:
-                                        await asyncio.sleep(1.5 * (attempt + 1))
-                                    else:
-                                        logging.warning("Страница %s не загрузилась после повторов: %s", page, e)
-                        return None
-
-                    # Первую страницу уже загрузили (text); остальные — параллельно.
-                    rest_pages = await asyncio.gather(
-                        *(fetch_message_page(page) for page in range(2, total_pages + 1))
-                    )
-                    page_texts = [text] + list(rest_pages)
-
-                    # Парсим страницы по порядку, чтобы сохранить порядок сообщений.
-                    all_messages = []
-                    for page_number, page_text in enumerate(page_texts, start=1):
-                        if page_text is None:
-                            continue
-                        if 'ERRNO:' in page_text or 'Undefined index' in page_text:
-                            logging.warning("Ошибка на странице %s, пропускаем", page_number)
-                            continue
-                        page_messages = parsers.parse_message_rows(page_text)
-                        logging.debug("Страница %s: найдено %s сообщений", page_number, len(page_messages))
-                        all_messages.extend(page_messages)
-
-                    logging.debug("Итого найдено сообщений со всех страниц: %s", len(all_messages))
-                    return all_messages
+            messages = parsers.parse_message_rows(text)
+            total_pages = parsers.parse_total_message_pages(text)
+            logging.debug("Страница %s сообщений: %s шт (всего страниц: %s)", page, len(messages), total_pages)
+            return {'messages': messages, 'total_pages': total_pages}
         except Exception as e:
-            logging.error('Ошибка при получении сообщений: %s', e, exc_info=True)
-            return []
+            logging.error('Ошибка при получении страницы %s сообщений: %s', page, e, exc_info=True)
+            return empty
+
+    async def get_messages(self) -> list:
+        """
+        Загружает ВСЕ страницы входящих (для CLI-режима messages_interface).
+        Бот использует постраничную get_messages_page для ленивой загрузки.
+        """
+        first = await self.get_messages_page(1)
+        all_messages = list(first['messages'])
+        for page in range(2, first['total_pages'] + 1):
+            all_messages.extend((await self.get_messages_page(page))['messages'])
+        logging.debug("Итого сообщений со всех страниц: %s", len(all_messages))
+        return all_messages
 
     async def get_message(self, message_id: str) -> dict:
         """Получить конкретное сообщение по ID"""

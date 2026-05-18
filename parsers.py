@@ -331,6 +331,36 @@ def parse_message_rows(page_html: str) -> list:
     return messages
 
 
+def parse_total_message_pages(html: str) -> int:
+    """
+    Определяет количество страниц входящих сообщений по блоку пагинации
+    (<center> со ссылкой на последнюю страницу или текстом «1-20 из 658»).
+    Возвращает минимум 1.
+    """
+    soup = BeautifulSoup(html or "", 'html.parser')
+    pagination = soup.find('center')
+    if not pagination:
+        return 1
+
+    # 1) Ссылка на последнюю страницу: onclick с 'page=' и '>>'.
+    last_link = pagination.find(
+        'a',
+        onclick=lambda x: bool(x) and 'page=' in str(x) and '>>' in str(x),
+    )
+    if last_link:
+        m = re.search(r'page=(\d+)', last_link.get('onclick', '') or '')
+        if m:
+            return max(1, int(m.group(1)))
+
+    # 2) Текст вида «1-20 из 658» — считаем страницы по 20 сообщений.
+    m = re.search(r'(\d+)\s*-\s*(\d+)\s+из\s+(\d+)', pagination.get_text())
+    if m:
+        total_items = int(m.group(3))
+        return max(1, (total_items + 19) // 20)
+
+    return 1
+
+
 # --- lk.sut.ru subconto/search.php: получатели по ФИО ------------------------
 
 def parse_recipients(html_text: str) -> list:

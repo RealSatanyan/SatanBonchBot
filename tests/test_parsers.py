@@ -231,6 +231,29 @@ def test_parse_message_rows_applies_defaults_for_blank_cells(load_fixture):
     assert blank["sender"] == "Неизвестно"
 
 
+# --- parse_total_message_pages -----------------------------------------------
+
+def test_parse_total_pages_from_count_text():
+    # «1-20 из 658» -> ceil(658 / 20) = 33 страницы.
+    html = "<center>Показано 1-20 из 658 сообщений</center>"
+    assert parsers.parse_total_message_pages(html) == 33
+
+
+def test_parse_total_pages_from_last_page_link():
+    html = '<center><a onclick="show(\'page=35\'); return false; // >>">»</a></center>'
+    assert parsers.parse_total_message_pages(html) == 35
+
+
+def test_parse_total_pages_no_pagination_returns_one():
+    assert parsers.parse_total_message_pages("<html><body>нет</body></html>") == 1
+    assert parsers.parse_total_message_pages("") == 1
+
+
+def test_parse_total_pages_single_page_fixture(load_fixture):
+    # В фикстуре messages.html нет блока пагинации — значит одна страница.
+    assert parsers.parse_total_message_pages(load_fixture("messages.html")) == 1
+
+
 # --- parse_recipients --------------------------------------------------------
 
 def test_parse_recipients_extracts_id_name_pairs(load_fixture):

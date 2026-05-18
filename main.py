@@ -3310,10 +3310,13 @@ async def cmd_messages(message: types.Message, uid: int = None):
             await message.answer("❌ Не удалось авторизоваться. Пожалуйста, выполните /login для авторизации.")
             return
         
-        # Получаем список сообщений
+        # Ленивая загрузка: тянем только первую страницу (~20 свежих сообщений),
+        # остальные подгружаются по мере листания. Так /messages открывается за
+        # пару секунд вместо ~10 на все 35 страниц.
         status_msg = await message.answer("⏳ Загружаю сообщения...")
-        messages = await message_api.get_messages()
-        
+        first_page = await message_api.get_messages_page(1)
+        messages = first_page['messages']
+
         if not messages:
             # Проверяем, может быть проблема с авторизацией
             if not hasattr(message_api, 'cookies') or not message_api.cookies:
@@ -3321,13 +3324,20 @@ async def cmd_messages(message: types.Message, uid: int = None):
             else:
                 await status_msg.edit_text("📭 У вас нет входящих сообщений.\n\n💡 Если сообщения должны быть, проверьте авторизацию через /login")
             return
-        
-        # Сохраняем состояние для навигации
+
+        # Сохраняем состояние для навигации (включая api для подгрузки страниц)
         message_states[user_id] = {
+            'api': message_api,
             'messages': messages,
-            'current_index': 0
+            'total_pages': first_page['total_pages'],
+            'loaded_pages': 1,
+            'current_index': 0,
         }
-        
+
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
         # Отображаем первое сообщение
         await show_message_list(user_id, message.chat.id, 0)
         
@@ -3341,11 +3351,15 @@ async def show_message_list(user_id: int, chat_id: int, index: int):
     """
     if user_id not in message_states:
         return
-    
-    messages = message_states[user_id]['messages']
+
+    state = message_states[user_id]
+    messages = state['messages']
     if not messages or index < 0 or index >= len(messages):
         return
-    
+
+    # Есть ли ещё не загруженные страницы (для счётчика и кнопки «Вперёд»).
+    has_more_pages = state.get('loaded_pages', 1) < state.get('total_pages', 1)
+
     msg = messages[index]
     
     # Формируем текст сообщения
@@ -3360,7 +3374,8 @@ async def show_message_list(user_id: int, chat_id: int, index: int):
     if len(title) > 100:
         title = title[:97] + '...'
     
-    text = f"{unread_marker} *Сообщение {index + 1} из {len(messages)}*\n\n"
+    count_display = f"{len(messages)}+" if has_more_pages else str(len(messages))
+    text = f"{unread_marker} *Сообщение {index + 1} из {count_display}*\n\n"
     text += f"📅 *Дата:* {date}\n"
     text += f"👤 *Отправитель:* {sender}\n"
     text += f"📋 *Тема:* {title}\n"
@@ -3373,7 +3388,7 @@ async def show_message_list(user_id: int, chat_id: int, index: int):
     
     if index > 0:
         row.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"msg_prev_{index}"))
-    if index < len(messages) - 1:
+    if index < len(messages) - 1 or has_more_pages:
         row.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"msg_next_{index}"))
     
     if row:
@@ -3412,8 +3427,18 @@ async def handle_message_callback(callback_query: CallbackQuery):
         elif data.startswith("msg_next_"):
             # Переход к следующему сообщению
             index = int(data.split("_")[-1]) + 1
-            if user_id in message_states and index < len(message_states[user_id]['messages']):
-                message_states[user_id]['current_index'] = index
+            state = message_states.get(user_id)
+            if not state:
+                await callback_query.answer("Список устарел — открой «Сообщения» заново", show_alert=True)
+                return
+            # Дошли до конца загруженного — лениво подгружаем следующую страницу.
+            if index >= len(state['messages']) and state.get('loaded_pages', 1) < state.get('total_pages', 1):
+                next_page = state.get('loaded_pages', 1) + 1
+                page_data = await state['api'].get_messages_page(next_page)
+                state['messages'].extend(page_data['messages'])
+                state['loaded_pages'] = next_page
+            if index < len(state['messages']):
+                state['current_index'] = index
                 await callback_query.answer()
                 await callback_query.message.delete()
                 await show_message_list(user_id, callback_query.message.chat.id, index)
@@ -3484,25 +3509,28 @@ async def handle_message_callback(callback_query: CallbackQuery):
             await callback_query.message.delete()
         
         elif data == "msg_refresh":
-            # Обновление списка сообщений
+            # Обновление списка сообщений — заново тянем первую страницу.
             await callback_query.answer("🔄 Обновляю список...")
-            
+
             message_api = await get_message_api(user_id)
             if not message_api:
                 await callback_query.message.answer("❌ Ошибка авторизации")
                 return
-            
-            messages = await message_api.get_messages()
-            if not messages:
+
+            first_page = await message_api.get_messages_page(1)
+            if not first_page['messages']:
                 await callback_query.message.answer("📭 У вас нет входящих сообщений.")
                 await callback_query.message.delete()
                 return
-            
+
             message_states[user_id] = {
-                'messages': messages,
-                'current_index': 0
+                'api': message_api,
+                'messages': first_page['messages'],
+                'total_pages': first_page['total_pages'],
+                'loaded_pages': 1,
+                'current_index': 0,
             }
-            
+
             await callback_query.message.delete()
             await show_message_list(user_id, callback_query.message.chat.id, 0)
         
