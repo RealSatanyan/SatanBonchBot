@@ -5,3 +5,5 @@ pytz
 pillow>=10.0.0
 tqdm
 aiohttp-socks
+cryptography
+beautifulsoup4

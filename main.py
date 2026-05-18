@@ -14,6 +14,9 @@ from aiogram.types import InputFile
 from aiogram.types import FSInputFile
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.client.session.aiohttp import AiohttpSession
 from PIL import Image, ImageDraw, ImageFont
 import pytz
@@ -27,15 +30,17 @@ import time as time_module
 from bs4 import BeautifulSoup
 import random
 from yarl import URL as YarlURL
+from cryptography.fernet import Fernet, InvalidToken
+import parsers
 
 # Импорт для работы с расписанием без авторизации
 try:
-    from TImetabels import BonchAPI as TimetableBonchAPI
+    from TImetabels import BonchAPI as TimetableBonchAPI, BROWSER_HEADERS
 except ImportError:
     # Если импорт не работает, используем альтернативный путь
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from TImetabels import BonchAPI as TimetableBonchAPI
+    from TImetabels import BonchAPI as TimetableBonchAPI, BROWSER_HEADERS
 
 # Ограничиваем частоту/параллелизм запросов к lk.sut.ru, чтобы не ловить антибот/ERR_MSG/403
 LK_CONCURRENCY = max(1, int(os.getenv("LK_CONCURRENCY", "1")))
@@ -93,114 +98,16 @@ class DebuggableBonchAPI(BonchAPI):
             pass
 
     def _get_week_safe(self, html: str) -> int:
-        """
-        Безопасно извлекает номер недели из HTML расписания.
-        Если заголовок недели отсутствует или формат изменился, возвращает 0.
-        """
-        if not html:
-            logging.warning("Пустой HTML расписания, используем неделю 0")
-            return 0
-
-        try:
-            soup = BeautifulSoup(html, "html.parser")
-
-            # 1) Быстрый путь: h3/h2, как было раньше.
-            header = soup.find(["h3", "h2"])
-            if header:
-                header_text = header.get_text(" ", strip=True)
-                m = re.search(r"№\s*(\d+)", header_text)
-                if m:
-                    return int(m.group(1))
-
-            # 2) Fallback: ищем "Неделя №X" по всему тексту страницы.
-            page_text = soup.get_text(" ", strip=True)
-            m = re.search(r"(Недел[яи]|Week)\s*№?\s*(\d+)", page_text, flags=re.IGNORECASE)
-            if m:
-                return int(m.group(2))
-
-            # 3) Не нашли — оставляем 0, но логируем контекст.
-            logging.warning("Не найден номер недели в расписании (нет h3/h2/паттерна 'Неделя №'), используем неделю 0")
-            return 0
-        except Exception as e:
-            logging.error("Ошибка при разборе номера недели: %s", e, exc_info=True)
-            return 0
+        """Извлекает номер недели из HTML расписания (см. parsers.parse_week_number)."""
+        return parsers.parse_week_number(html)
 
     def _get_week_param_safe(self, html: str) -> int:
-        """
-        Извлекает параметр week для POST в raspisanie.php (это НЕ номер недели из заголовка).
-        На странице он передается как showweek(<week_param>) и open_zan(<rasp>, <week_param>).
-        """
-        if not html:
-            return 0
-
-        try:
-            soup = BeautifulSoup(html, "html.parser")
-
-            # 1) Самый надежный способ: ссылка showweek(...) текущей недели обычно выделена <b>...</b>
-            for a in soup.find_all("a"):
-                onclick = a.get("onclick", "") or ""
-                if not isinstance(onclick, str):
-                    continue
-                m = re.search(r"showweek\(\s*(\d+)\s*\)", onclick)
-                if m and a.find("b"):
-                    return int(m.group(1))
-
-            # 2) Fallback: берем week_param из любой кнопки "Начать занятие" open_zan(rasp, week)
-            for a in soup.find_all("a"):
-                onclick = a.get("onclick", "") or ""
-                if not isinstance(onclick, str):
-                    continue
-                m = re.search(r"open_zan\(\s*\d+\s*,\s*(\d+)\s*\)", onclick)
-                if m:
-                    return int(m.group(1))
-
-            # 3) Fallback regex по сырому html
-            m = re.search(r"showweek\(\s*(\d+)\s*\)[^<]*&nbsp;?<b>", html)
-            if m:
-                return int(m.group(1))
-
-            m = re.search(r"open_zan\(\s*\d+\s*,\s*(\d+)\s*\)", html)
-            if m:
-                return int(m.group(1))
-
-            return 0
-        except Exception:
-            logging.warning("Не удалось извлечь week_param из HTML, используем 0", exc_info=True)
-            return 0
+        """Извлекает week_param для POST в raspisanie.php (см. parsers.parse_week_param)."""
+        return parsers.parse_week_param(html)
 
     def _extract_start_lesson_ids(self, timetable_html: str) -> tuple[str, ...]:
-        """
-        Извлекает только те занятия, где реально есть кнопка "Начать занятие".
-        Это самый устойчивый критерий: onclick="open_zan(<rasp>, <week_param>)".
-        """
-        if not timetable_html:
-            return tuple()
-
-        try:
-            soup = BeautifulSoup(timetable_html, "html.parser")
-            ids: list[str] = []
-            for a in soup.find_all("a"):
-                onclick = a.get("onclick", "") or ""
-                if not isinstance(onclick, str):
-                    continue
-                # На странице встречаются и "Кнопка появится... Обновить." (update_zan), и нужная нам open_zan
-                m = re.search(r"open_zan\(\s*(\d+)\s*,\s*\d+\s*\)", onclick)
-                if not m:
-                    continue
-                # Дополнительно фильтруем по тексту, чтобы не схватить что-то случайное
-                text = a.get_text(" ", strip=True)
-                if text and "Начать занятие" in text:
-                    ids.append(m.group(1))
-
-            seen = set()
-            out: list[str] = []
-            for x in ids:
-                if x not in seen:
-                    seen.add(x)
-                    out.append(x)
-            return tuple(out)
-        except Exception:
-            return tuple()
+        """Извлекает занятия с кнопкой «Начать занятие» (см. parsers.extract_start_lesson_ids)."""
+        return parsers.extract_start_lesson_ids(timetable_html)
 
     async def login(self, email: str, password: str) -> bool:
         """
@@ -220,13 +127,14 @@ class DebuggableBonchAPI(BonchAPI):
         }
 
         try:
-            timeout_cfg = aiohttp.ClientTimeout(total=20)
+            timeout_cfg = aiohttp.ClientTimeout(total=40)
             async with get_lk_semaphore():
                 async with aiohttp.ClientSession(
                     timeout=timeout_cfg,
                     headers=headers,
-                    trust_env=False,
+                    trust_env=True,
                     cookie_jar=self.cookie_jar,
+                    connector=aiohttp.TCPConnector(force_close=True),
                 ) as session:
                     # Инициализируем сессию (получаем куки)
                     async with session.get(CABINET, proxy=None) as response:
@@ -277,12 +185,15 @@ class DebuggableBonchAPI(BonchAPI):
             logging.error("Ошибка при авторизации для %s: %s", email, e, exc_info=True)
             return False
 
-    async def get_raw_timetable(self) -> str:
+    async def get_raw_timetable(self, week_number: int = False) -> str:
         """
         Получает HTML страницы raspisanie.php из lk.sut.ru.
-        Важно: принудительно игнорируем прокси из env (trust_env=False) и не используем proxy.
+        week_number — номер недели для навигации; без него берётся текущая.
+        Запрос к ЛК идёт через прокси (trust_env=True подхватывает HTTP(S)_PROXY из env).
         """
         URL = "https://lk.sut.ru/cabinet/project/cabinet/forms/raspisanie.php"
+        if week_number:
+            URL += f"?week={week_number}"
         ERR_MSG = "У Вас нет прав доступа. Или необходимо перезагрузить приложение.."
         headers = {
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
@@ -292,11 +203,12 @@ class DebuggableBonchAPI(BonchAPI):
             "Connection": "keep-alive",
         }
 
-        timeout_cfg = aiohttp.ClientTimeout(total=20)
+        timeout_cfg = aiohttp.ClientTimeout(total=40)
 
-        # Небольшой кэш, чтобы напоминание "за 10 минут" и клик не дергали страницу
-        # слишком часто в рамках одного цикла пользователя.
-        if self._raw_timetable_cache_html is not None and self._raw_timetable_cache_ts is not None:
+        # Небольшой кэш для текущей недели, чтобы напоминание "за 10 минут" и клик
+        # не дёргали страницу слишком часто. Для конкретной недели кэш не используем.
+        use_cache = not week_number
+        if use_cache and self._raw_timetable_cache_html is not None and self._raw_timetable_cache_ts is not None:
             if (time_module.time() - self._raw_timetable_cache_ts) < 30:
                 return self._raw_timetable_cache_html
 
@@ -304,8 +216,9 @@ class DebuggableBonchAPI(BonchAPI):
             async with aiohttp.ClientSession(
                 timeout=timeout_cfg,
                 headers=headers,
-                trust_env=False,
+                trust_env=True,
                 cookie_jar=self.cookie_jar,
+                connector=aiohttp.TCPConnector(force_close=True),
             ) as session:
                 async with session.get(URL, proxy=None) as response:
                     text = await response.text()
@@ -317,8 +230,9 @@ class DebuggableBonchAPI(BonchAPI):
                 if (text or "").strip() == ERR_MSG:
                     logging.warning("ЛК вернул ERR_MSG вместо расписания — похоже, сессия истекла.")
                 self._refresh_cookies_view()
-                self._raw_timetable_cache_html = text
-                self._raw_timetable_cache_ts = time_module.time()
+                if use_cache:
+                    self._raw_timetable_cache_html = text
+                    self._raw_timetable_cache_ts = time_module.time()
                 return text
 
     def _parse_today_start_lesson_details(
@@ -450,27 +364,8 @@ class DebuggableBonchAPI(BonchAPI):
         return self._parse_today_start_lesson_details(html_text, today_date_str, target_pair_number)
 
     def _extract_lesson_ids_fallback(self, timetable_html: str) -> tuple[str, ...]:
-        """
-        Запасной вариант извлечения lesson_id, если внешний parser не нашёл кандидатов.
-        На lk.sut.ru часто используются элементы с id вида 'knopXXXX'.
-        """
-        try:
-            soup = BeautifulSoup(timetable_html or "", "html.parser")
-            ids = []
-            for tag in soup.find_all(True):
-                _id = tag.get("id", "")
-                if isinstance(_id, str) and _id.startswith("knop") and len(_id) > 4:
-                    ids.append(_id[4:])
-            # Уникализируем, сохраняя порядок
-            seen = set()
-            out = []
-            for x in ids:
-                if x not in seen:
-                    seen.add(x)
-                    out.append(x)
-            return tuple(out)
-        except Exception:
-            return tuple()
+        """Запасной поиск lesson_id по id='knopXXXX' (см. parsers.extract_lesson_ids_fallback)."""
+        return parsers.extract_lesson_ids_fallback(timetable_html)
 
     async def click_start_lesson(self) -> int:
         URL = "https://lk.sut.ru/cabinet/project/cabinet/forms/raspisanie.php"
@@ -513,26 +408,20 @@ class DebuggableBonchAPI(BonchAPI):
 
         if not lesson_ids:
             # Сохраняем HTML для анализа: сайт мог поменять верстку.
-            try:
-                Path("debug_dumps").mkdir(exist_ok=True)
-                ts = datetime.now(pytz.timezone("Europe/Moscow")).strftime("%Y%m%d_%H%M%S")
-                dump_path = Path("debug_dumps") / f"no_candidates_{ts}.html"
-                dump_path.write_text(timetable or "", encoding="utf-8")
+            dump_path = save_debug_dump("no_candidates", timetable or "")
+            if dump_path:
                 logging.warning("Не найдено кандидатов для клика. HTML сохранен в %s", dump_path)
-            except Exception:
-                logging.warning("Не найдено кандидатов для клика, и не удалось сохранить HTML для отладки", exc_info=True)
+            else:
+                logging.warning("Не найдено кандидатов для клика (debug-дамп не сохранён)")
             return 0
 
         if not week_param:
             # Без week_param клики не сработают (сервер ждёт внутренний индекс showweek(...))
-            try:
-                Path("debug_dumps").mkdir(exist_ok=True)
-                ts = datetime.now(pytz.timezone("Europe/Moscow")).strftime("%Y%m%d_%H%M%S")
-                dump_path = Path("debug_dumps") / f"no_week_param_{ts}.html"
-                dump_path.write_text(timetable or "", encoding="utf-8")
+            dump_path = save_debug_dump("no_week_param", timetable or "")
+            if dump_path:
                 logging.error("Не удалось извлечь week_param. HTML сохранен в %s", dump_path)
-            except Exception:
-                logging.error("Не удалось извлечь week_param и сохранить HTML", exc_info=True)
+            else:
+                logging.error("Не удалось извлечь week_param (debug-дамп не сохранён)")
             return 0
 
         clicked = 0
@@ -544,10 +433,11 @@ class DebuggableBonchAPI(BonchAPI):
         }
         async with get_lk_semaphore():
             async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(15),
+                timeout=aiohttp.ClientTimeout(40),
                 headers=headers,
-                trust_env=False,
+                trust_env=True,
                 cookie_jar=self.cookie_jar,
+                connector=aiohttp.TCPConnector(force_close=True),
             ) as session:
                 for lesson_id in lesson_ids:
                     data = {"open": 1, "rasp": lesson_id, "week": week_param}
@@ -582,8 +472,67 @@ logging.basicConfig(
 
 load_dotenv()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-proxy_url = os.getenv("ALL_PROXY")
-tg_session = AiohttpSession(proxy=proxy_url) if proxy_url else AiohttpSession()
+
+# Прокси нужен ТОЛЬКО для запросов в ЛК (lk.sut.ru).
+# Напрямую, без прокси, ходят: Telegram (api.telegram.org) и публичное расписание
+# (cabinet.sut.ru, www.sut.ru) — последнее через прокси отвечает таймаутом.
+#
+# Прокси прокидывается через стандартные переменные HTTP(S)_PROXY: aiohttp-сессии для
+# sut.ru создаются с trust_env=True и подхватывают их автоматически. Хосты из NO_PROXY
+# при этом исключаются и идут напрямую. Telegram-сессия (aiogram AiohttpSession) env не
+# читает вовсе, так что для неё прокси не применяется в любом случае.
+NO_PROXY_HOSTS = "api.telegram.org,cabinet.sut.ru,www.sut.ru"
+LK_PROXY = os.getenv("ALL_PROXY")
+if LK_PROXY:
+    for _proxy_var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        os.environ[_proxy_var] = LK_PROXY
+    for _no_proxy_var in ("NO_PROXY", "no_proxy"):
+        os.environ[_no_proxy_var] = NO_PROXY_HOSTS
+    logging.info("Прокси для ЛК (lk.sut.ru) включён: %s", YarlURL(LK_PROXY).with_user(None))
+    logging.info("Напрямую, без прокси: %s", NO_PROXY_HOSTS)
+else:
+    logging.info("ALL_PROXY не задан — запросы в ЛК идут напрямую")
+
+# --- Шифрование паролей в users.db -------------------------------------------
+# Пароли от ЛК хранятся в БД зашифрованными (Fernet, симметричный AES).
+# Ключ ENCRYPTION_KEY лежит в .env. Потеря ключа = пароли не восстановить
+# (пользователям придётся войти заново). Храни копию ключа отдельно и надёжно.
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
+try:
+    _fernet = Fernet(ENCRYPTION_KEY.encode()) if ENCRYPTION_KEY else None
+except (ValueError, TypeError):
+    logging.error("ENCRYPTION_KEY задан, но невалиден — шифрование паролей ОТКЛЮЧЕНО!")
+    _fernet = None
+if _fernet is None:
+    logging.warning(
+        "ENCRYPTION_KEY не задан в .env — пароли в users.db хранятся БЕЗ шифрования. "
+        "Сгенерируйте ключ: "
+        "python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+    )
+
+
+def encrypt_password(password: str) -> str:
+    """Шифрует пароль для хранения в БД. Без ключа возвращает значение как есть."""
+    if _fernet is None:
+        return password
+    return _fernet.encrypt(password.encode()).decode()
+
+
+def decrypt_password(stored: str) -> str:
+    """
+    Расшифровывает пароль из БД. Обратно совместимо со старыми plaintext-записями:
+    если значение не является валидным Fernet-токеном, возвращает его как есть.
+    """
+    if _fernet is None or not stored:
+        return stored
+    try:
+        return _fernet.decrypt(stored.encode()).decode()
+    except InvalidToken:
+        return stored
+
+
+# Telegram-сессия БЕЗ прокси.
+tg_session = AiohttpSession()
 conn = sqlite3.connect('users.db', check_same_thread=False)
 cursor = conn.cursor()
 
@@ -592,9 +541,21 @@ with closing(sqlite3.connect('users.db')) as db:
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             email TEXT NOT NULL,
-            password TEXT NOT NULL
+            password TEXT NOT NULL,
+            notify_enabled INTEGER NOT NULL DEFAULT 1,
+            notify_minutes INTEGER NOT NULL DEFAULT 10,
+            autoclick_enabled INTEGER NOT NULL DEFAULT 1
         )
     ''')
+    # Миграция уже существующих БД: добавляем недостающие колонки настроек
+    # (ALTER TABLE ADD COLUMN идемпотентным не является).
+    _user_columns = {row[1] for row in db.execute("PRAGMA table_info(users)")}
+    if 'notify_enabled' not in _user_columns:
+        db.execute('ALTER TABLE users ADD COLUMN notify_enabled INTEGER NOT NULL DEFAULT 1')
+    if 'notify_minutes' not in _user_columns:
+        db.execute('ALTER TABLE users ADD COLUMN notify_minutes INTEGER NOT NULL DEFAULT 10')
+    if 'autoclick_enabled' not in _user_columns:
+        db.execute('ALTER TABLE users ADD COLUMN autoclick_enabled INTEGER NOT NULL DEFAULT 1')
     db.commit()
 
 bot = Bot(token=BOT_TOKEN, session=tg_session)
@@ -614,6 +575,9 @@ pending_lk_messages = {}  # Словарь {(user_id, recipient_id): {'text': st
 LOGIN_CMD_RE = re.compile(r"^/login(?:@\w+)?\s+(\S+)\s+(\S+)\s*$")
 MAX_EMAIL_LEN = 254
 MAX_PASSWORD_LEN = 256
+# Email должен быть похож на email: это отсекает мусор и попытки инъекций
+# (email подставляется в URL запроса авторизации в ЛК).
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 
 
 def parse_login_credentials(message_text: str) -> tuple[str, str] | None:
@@ -632,7 +596,84 @@ def parse_login_credentials(message_text: str) -> tuple[str, str] | None:
     if len(email) > MAX_EMAIL_LEN or len(password) > MAX_PASSWORD_LEN:
         return None
 
+    if not EMAIL_RE.match(email):
+        return None
+
     return email, password
+
+
+# --- Rate-limit на попытки входа (защита от перебора паролей) -----------------
+# In-memory троттл: не более LOGIN_RATE_LIMIT попыток входа на user_id
+# за окно LOGIN_RATE_WINDOW_SEC секунд. Настраивается через .env.
+LOGIN_RATE_LIMIT = max(1, int(os.getenv("LOGIN_RATE_LIMIT", "5")))
+LOGIN_RATE_WINDOW_SEC = max(1, int(os.getenv("LOGIN_RATE_WINDOW_SEC", "300")))
+_login_attempts: dict[int, list[float]] = {}
+
+
+def check_login_rate_limit(user_id: int) -> int:
+    """
+    Регистрирует попытку входа и проверяет лимит.
+    Возвращает 0, если вход разрешён, либо число секунд до следующей попытки.
+    """
+    now = time_module.monotonic()
+    window_start = now - LOGIN_RATE_WINDOW_SEC
+    attempts = [t for t in _login_attempts.get(user_id, ()) if t > window_start]
+    if len(attempts) >= LOGIN_RATE_LIMIT:
+        _login_attempts[user_id] = attempts
+        return int(attempts[0] + LOGIN_RATE_WINDOW_SEC - now) + 1
+    attempts.append(now)
+    _login_attempts[user_id] = attempts
+    return 0
+
+
+def format_retry_after(seconds: int) -> str:
+    """Человекочитаемое время ожидания для сообщений пользователю."""
+    if seconds >= 60:
+        minutes = (seconds + 59) // 60
+        return f"{minutes} мин"
+    return f"{seconds} сек"
+
+
+def _prune_debug_dumps(dump_dir: Path) -> None:
+    """Оставляет в debug_dumps/ только N последних .html-файлов (DEBUG_DUMPS_KEEP)."""
+    try:
+        keep = max(1, int(os.getenv("DEBUG_DUMPS_KEEP", "30")))
+    except ValueError:
+        keep = 30
+    try:
+        dumps = sorted(
+            dump_dir.glob("*.html"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for stale in dumps[keep:]:
+            stale.unlink(missing_ok=True)
+    except Exception:
+        logging.warning("Не удалось почистить старые debug-дампы", exc_info=True)
+
+
+def save_debug_dump(prefix: str, content: str) -> Optional[Path]:
+    """
+    Сохраняет HTML-дамп в debug_dumps/ для отладки парсеров.
+    Управляется через .env:
+      DEBUG_DUMPS=0        — полностью отключить дампы;
+      DEBUG_DUMPS_KEEP=30  — сколько последних файлов хранить.
+    Возвращает путь к файлу либо None (дампы отключены / ошибка записи).
+    """
+    if os.getenv("DEBUG_DUMPS", "1").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    try:
+        dump_dir = Path("debug_dumps")
+        dump_dir.mkdir(exist_ok=True)
+        ts = datetime.now(pytz.timezone("Europe/Moscow")).strftime("%Y%m%d_%H%M%S_%f")
+        dump_path = dump_dir / f"{prefix}_{ts}.html"
+        dump_path.write_text(content or "", encoding="utf-8")
+        _prune_debug_dumps(dump_dir)
+        return dump_path
+    except Exception:
+        logging.warning("Не удалось сохранить debug-дамп '%s'", prefix, exc_info=True)
+        return None
+
 
 class LessonController:
     def __init__(self, api, bot, user_id):
@@ -644,8 +685,6 @@ class LessonController:
         self.notified = False  # Флаг для отслеживания отправки уведомления
         self._last_success_lesson_key: Optional[str] = None
         self._last_upcoming_lesson_key: Optional[str] = None
-        self.debug_dir = Path("debug_dumps")
-        self.debug_dir.mkdir(exist_ok=True)
 
         # Интервалы пар (начало и конец)
         self.lesson_intervals = LESSON_INTERVALS
@@ -703,13 +742,15 @@ class LessonController:
                 now_dt = datetime.now(moscow_tz)
                 now = now_dt.time()
 
-                # Напоминание "за 10 минут" до начала пары (один раз на пару)
-                # Диапазон 9..10 минут нужен из-за периодической проверки раз в минуту.
+                # Напоминание о начале пары (один раз на пару). Включение и
+                # «за сколько минут» настраиваются пользователем в разделе «Профиль».
+                # Диапазон (N-1)..N нужен из-за периодической проверки раз в минуту.
+                notify_enabled, notify_minutes = get_notify_settings(self.user_id)
                 upcoming_idx = self._upcoming_lesson_interval_index(
                     now_dt,
-                    min_minutes_before_start=9,
-                    max_minutes_before_start=10,
-                )
+                    min_minutes_before_start=max(1, notify_minutes - 1),
+                    max_minutes_before_start=notify_minutes,
+                ) if notify_enabled else None
                 if upcoming_idx is not None:
                     lesson_key = f"{now_dt.strftime('%Y-%m-%d')}_upcoming_{upcoming_idx}"
                     if self._last_upcoming_lesson_key != lesson_key:
@@ -722,9 +763,20 @@ class LessonController:
                             details = await self.api.get_upcoming_start_lesson_details(
                                 now_dt=now_dt,
                                 target_pair_index=upcoming_idx,
-                                window_minutes=10,
+                                window_minutes=notify_minutes,
                             )
-                            if details:
+                            # Интервалы пар (LESSON_INTERVALS) — это просто сетка времени.
+                            # Уведомляем ТОЛЬКО если эта пара реально есть в расписании
+                            # на сегодня (details найдены). Нет пары -> молчим, ключ не
+                            # фиксируем, чтобы при сбое загрузки расписания был ретрай.
+                            if not details:
+                                logging.info(
+                                    "Пара %s в %s не отправлена: нет в расписании на сегодня (user_id=%s)",
+                                    human_idx,
+                                    now_dt.strftime("%H:%M"),
+                                    self.user_id,
+                                )
+                            else:
                                 room = details.get("room") or "—"
                                 subject = details.get("subject") or ""
                                 teacher = details.get("teacher") or ""
@@ -735,17 +787,15 @@ class LessonController:
                                     f"🔔 Через {minutes_left} мин начнётся {human_idx}-я пара."
                                     f"{subj_part}{room_part}{teacher_part}"
                                 )
-                            else:
-                                msg = f"🔔 Через {minutes_left} мин начнётся {human_idx}-я пара."
 
-                            await self.bot.send_message(self.user_id, msg)
-                            self._last_upcoming_lesson_key = lesson_key
-                            logging.info(
-                                "Отправлено напоминание о паре: user_id=%s, pair=%s, minutes_left=%s",
-                                self.user_id,
-                                human_idx,
-                                minutes_left,
-                            )
+                                await self.bot.send_message(self.user_id, msg)
+                                self._last_upcoming_lesson_key = lesson_key
+                                logging.info(
+                                    "Отправлено напоминание о паре: user_id=%s, pair=%s, minutes_left=%s",
+                                    self.user_id,
+                                    human_idx,
+                                    minutes_left,
+                                )
                         except Exception as notify_error:
                             logging.warning(
                                 "Не удалось отправить напоминание о паре для user_id=%s: %s",
@@ -857,6 +907,7 @@ class LessonController:
             raise ValueError(f"Не найдены данные для переавторизации пользователя {self.user_id}")
         
         email, password = result
+        password = decrypt_password(password)
         # Создаем новый экземпляр API и авторизуемся
         apis[self.user_id] = DebuggableBonchAPI()
         await apis[self.user_id].login(email, password)
@@ -875,10 +926,9 @@ class LessonController:
                 logging.warning("Обнаружен редирект на login=no - сессия истекла. Не сохраняем снимок. (%s)", reason)
                 raise ValueError("Session expired - redirect to login=no")
             
-            timestamp = datetime.now(pytz.timezone('Europe/Moscow')).strftime("%Y%m%d_%H%M%S")
-            file_path = self.debug_dir / f"{self.user_id}_{timestamp}.html"
-            file_path.write_text(raw_html, encoding="utf-8")
-            logging.error("Снимок расписания сохранен в %s (%s)", file_path, reason)
+            file_path = save_debug_dump(str(self.user_id), raw_html)
+            if file_path:
+                logging.error("Снимок расписания сохранен в %s (%s)", file_path, reason)
             return file_path
         except ValueError:
             # Не логируем ValueError как ошибку - это ожидаемая ситуация с истекшей сессией
@@ -904,51 +954,68 @@ class LessonController:
                 pass
     
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
+    user_id = message.from_user.id
+    if is_registered(user_id):
+        await message.answer(
+            "👋 С возвращением!\n\nВыбери раздел в меню снизу 👇",
+            reply_markup=main_menu_kb(),
+        )
+        return
     await message.answer(
-        "Привет! Этот бот что то типо моей вариации BonchBot."
+        "👋 Привет! Я SatanBonchBot — помощник студента СПбГУТ.\n\n"
+        "Что я умею:\n"
+        "📅 Расписание — групп, преподавателей и аудиторий\n"
+        "✅ Автоотметка — сам отмечаю тебя на парах в ЛК\n"
+        "✉️ Сообщения ЛК — читать и отправлять\n"
+        "🔔 Уведомления о начале пар\n\n"
+        "Расписание доступно сразу — жми «📅 Расписание» в меню снизу.\n"
+        "Для автоотметки, личного расписания и сообщений нужно войти "
+        "в личный кабинет СПбГУТ.",
+        reply_markup=main_menu_kb(),
+    )
+    await message.answer(
+        "Подключить личный кабинет?",
+        reply_markup=login_prompt_kb(),
     )
 
 @dp.message(Command("login"))
-async def cmd_login(message: types.Message):
+async def cmd_login(message: types.Message, state: FSMContext):
+    await state.clear()
+    parsed = parse_login_credentials(message.text or "")
     try:
-        parsed = parse_login_credentials(message.text or "")
-        if not parsed:
-            await message.answer("Используйте: /login <email> <password>")
-            return
-
-        email, password = parsed
-        user_id = message.from_user.id
-
-        # Удаляем сообщение пользователя с данными
         await message.delete()
-
-        cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
-        existing_user = cursor.fetchone()
-
-        with conn:
-            if existing_user:
-                cursor.execute('''
-                    UPDATE users
-                    SET email = ?, password = ?
-                    WHERE user_id = ?
-                ''', (email, password, user_id))
-            else:
-                cursor.execute(
-                    'INSERT INTO users (user_id, email, password) VALUES (?, ?, ?)',
-                    (user_id, email, password)
-                )
-
-        # Создаем новый экземпляр BonchAPI для пользователя
-        apis[user_id] = DebuggableBonchAPI()
-        await apis[user_id].login(email, password)
-        controllers[user_id] = LessonController(apis[user_id], bot, user_id)  # Передаем api, bot и user_id в контроллер
-        
-        await message.answer("Авторизация прошла успешно!")
-
-    except Exception as e:
-        logging.error("Ошибка в /login для пользователя %s: %s", message.from_user.id if message.from_user else "unknown", e, exc_info=True)
-        await message.answer("Ошибка авторизации. Попробуйте позже.")
+    except Exception:
+        pass
+    if not parsed:
+        await message.answer(
+            "Чтобы войти в ЛК, нажми кнопку ниже.\n"
+            "Либо отправь одной строкой: /login <email> <пароль>",
+            reply_markup=login_prompt_kb(),
+        )
+        return
+    email, password = parsed
+    retry_after = check_login_rate_limit(message.from_user.id)
+    if retry_after:
+        await message.answer(
+            f"⏳ Слишком много попыток входа. Попробуй снова через {format_retry_after(retry_after)}.",
+            reply_markup=login_prompt_kb(),
+        )
+        return
+    status = await message.answer("⏳ Вхожу в ЛК...")
+    ok = await perform_login(message.from_user.id, email, password)
+    if ok:
+        try:
+            await status.edit_text("✅ Готово! Ты вошёл в личный кабинет.")
+        except Exception:
+            pass
+        await message.answer("Меню — снизу 👇", reply_markup=main_menu_kb())
+    else:
+        try:
+            await status.edit_text("❌ Не удалось войти. Проверь email и пароль.")
+        except Exception:
+            pass
 
 @dp.message(Command("start_lesson"))
 async def cmd_start_lesson(message: types.Message):
@@ -966,6 +1033,7 @@ async def cmd_start_lesson(message: types.Message):
         return
 
     controller.task = asyncio.create_task(controller.start_lesson())
+    set_autoclick_enabled(user_id, True)
     await message.answer("Автокликалка запущена.")
 
 @dp.message(Command("stop_lesson"))
@@ -984,6 +1052,7 @@ async def cmd_stop_lesson(message: types.Message):
         return
 
     await controller.stop_lesson(user_id)
+    set_autoclick_enabled(user_id, False)
     await message.answer("Автокликалка остановлена.")
 
 @dp.message(Command("status"))
@@ -1001,11 +1070,11 @@ async def cmd_status(message: types.Message):
     await message.answer(status)
 
 @dp.message(Command("test_notify"))
-async def cmd_test_notify(message: types.Message):
+async def cmd_test_notify(message: types.Message, uid: int = None):
     """
     Ручная проверка доставки уведомления о паре в Telegram.
     """
-    user_id = message.from_user.id
+    user_id = uid if uid is not None else message.from_user.id
 
     test_msg = (
         "🔔 Через 10 мин начнётся 3-я пара.\n"
@@ -1019,7 +1088,7 @@ async def cmd_test_notify(message: types.Message):
         await message.answer("✅ Тестовое уведомление отправлено.")
     except Exception as e:
         logging.warning("Не удалось отправить тестовое уведомление для user_id=%s: %s", user_id, e, exc_info=True)
-        await message.answer(f"❌ Не удалось отправить тестовое уведомление: {e}")
+        await message.answer("❌ Не удалось отправить тестовое уведомление. Попробуй позже.")
 
 @dp.message(Command("my_account"))
 async def cmd_my_account(message: types.Message):
@@ -1967,7 +2036,7 @@ async def process_image_week(callback_query: CallbackQuery):
         await callback_query.answer()
     except Exception as e:
         logging.error(f"Ошибка при отправке изображения: {e}", exc_info=True)
-        await callback_query.answer(f"Ошибка: {e}", show_alert=True)
+        await callback_query.answer("⚠️ Не удалось выполнить действие. Попробуй позже.", show_alert=True)
         
 def get_week_navigation_buttons(week_offset: int = 0) -> InlineKeyboardMarkup:
     """
@@ -2117,7 +2186,7 @@ async def process_teacher_week_navigation(callback_query: CallbackQuery):
     
     except Exception as e:
         logging.error(f"Ошибка при переключении недели преподавателя: {e}", exc_info=True)
-        await callback_query.answer(f"Ошибка: {e}", show_alert=True)
+        await callback_query.answer("⚠️ Не удалось выполнить действие. Попробуй позже.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("prev_classroom_week_") | F.data.startswith("next_classroom_week_") | F.data.startswith("all_classroom_weeks_"))
 async def process_classroom_week_navigation(callback_query: CallbackQuery):
@@ -2172,7 +2241,7 @@ async def process_classroom_week_navigation(callback_query: CallbackQuery):
     
     except Exception as e:
         logging.error(f"Ошибка при переключении недели кабинета: {e}", exc_info=True)
-        await callback_query.answer(f"Ошибка: {e}", show_alert=True)
+        await callback_query.answer("⚠️ Не удалось выполнить действие. Попробуй позже.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("prev_group_week_") | F.data.startswith("next_group_week_") | F.data.startswith("image_group_week_"))
 async def process_group_week_navigation(callback_query: CallbackQuery):
@@ -2250,7 +2319,7 @@ async def process_group_week_navigation(callback_query: CallbackQuery):
                     await callback_query.answer("❌ Ошибка при генерации изображения", show_alert=True)
             except Exception as e:
                 logging.error(f"Ошибка при генерации изображения: {e}", exc_info=True)
-                await callback_query.answer(f"❌ Ошибка: {e}", show_alert=True)
+                await callback_query.answer("⚠️ Что-то пошло не так. Попробуй позже.", show_alert=True)
             return
         
         # Форматируем расписание
@@ -2270,7 +2339,7 @@ async def process_group_week_navigation(callback_query: CallbackQuery):
     
     except Exception as e:
         logging.error(f"Ошибка при переключении недели группы: {e}", exc_info=True)
-        await callback_query.answer(f"Ошибка: {e}", show_alert=True)
+        await callback_query.answer("⚠️ Не удалось выполнить действие. Попробуй позже.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("prev_week_") | F.data.startswith("next_week_") | F.data.startswith("current_week_"))
 async def process_week_navigation(callback_query: CallbackQuery):
@@ -2305,11 +2374,12 @@ async def process_week_navigation(callback_query: CallbackQuery):
         await callback_query.answer()
     
     except Exception as e:
-        await callback_query.answer(f"Ошибка: {e}", show_alert=True)
+        logging.error("Ошибка при переключении недели расписания: %s", e, exc_info=True)
+        await callback_query.answer("⚠️ Не удалось переключить неделю. Попробуй позже.", show_alert=True)
 
 @dp.message(Command("timetable"))
-async def cmd_timetable(message: types.Message):
-    user_id = message.from_user.id
+async def cmd_timetable(message: types.Message, uid: int = None):
+    user_id = uid if uid is not None else message.from_user.id
     if user_id not in apis:  # Проверяем, есть ли api для пользователя
         # Пытаемся автоматически авторизовать пользователя, если он есть в БД
         success = await auto_login_user(user_id)
@@ -2330,7 +2400,8 @@ async def cmd_timetable(message: types.Message):
         await message.answer(formatted_timetable, parse_mode="Markdown", reply_markup=reply_markup)
     
     except Exception as e:
-        await message.answer(f"Ошибка при получении расписания: {e}")
+        logging.error("Ошибка при получении расписания: %s", e, exc_info=True)
+        await message.answer("⚠️ Не удалось загрузить расписание. Попробуй позже.")
 
 async def get_timetable_api():
     """
@@ -2375,26 +2446,42 @@ async def all_groups_timetable_with_progress(api):
     timetable_progress['start_time'] = start
     
     connector = aiohttp.TCPConnector(limit=api.limit)
-    async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = [api.get_timetable(session, '1', group_id) for group_id, _ in group_items]
-        
-        # Создаем обертку для отслеживания прогресса
+    async with aiohttp.ClientSession(connector=connector, trust_env=True, headers=BROWSER_HEADERS) as session:
         completed = 0
         async def track_progress(coro):
             nonlocal completed
             result = await coro
             completed += 1
-            timetable_progress['current'] = completed
+            timetable_progress['current'] = min(completed, total_groups)
             return result
-        
-        # Обертываем задачи для отслеживания прогресса
-        tracked_tasks = [track_progress(task) for task in tasks]
-        
-        # Используем tqdm для отображения прогресса в консоли
-        results = await tqdm_asyncio.gather(*tracked_tasks, desc='Загрузка групп', unit=' Групп',
-            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} | {rate_fmt}{postfix}')
-        
-        timetable = {group_name: results[index] for index, (_, group_name) in enumerate(group_items) if not isinstance(results[index], str)}
+
+        # cabinet.sut.ru нестабилен под нагрузкой: за один проход часть групп
+        # отдаётся с ошибкой. Делаем несколько проходов, дозабирая только неудачные.
+        pending = list(group_items)
+        for pass_num in range(3):
+            if not pending:
+                break
+            tracked_tasks = [track_progress(api.get_timetable(session, '1', group_id))
+                             for group_id, _ in pending]
+            results = await tqdm_asyncio.gather(*tracked_tasks,
+                desc=f'Загрузка групп (проход {pass_num + 1})', unit=' Групп',
+                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} | {rate_fmt}{postfix}')
+
+            still_failed = []
+            for (group_id, group_name), result in zip(pending, results):
+                if isinstance(result, str):
+                    still_failed.append((group_id, group_name))
+                else:
+                    timetable[group_name] = result
+            pending = still_failed
+
+            if pending and pass_num < 2:
+                logging.info('Проход %s завершён, не удалось %s групп — повтор через 20с',
+                             pass_num + 1, len(pending))
+                await asyncio.sleep(20)
+
+        if pending:
+            logging.warning('После всех проходов не загрузилось групп: %s', len(pending))
     
     # Сохраняем в JSON (как в оригинальном методе)
     TimetableBonchAPI.save_to_json(timetable, 'timetable.json')
@@ -2525,7 +2612,7 @@ async def get_all_groups_timetable(force_reload: bool = False, user_id: int = No
             for user_id in list(timetable_progress_users.keys()):
                 try:
                     msg = timetable_progress_users[user_id]
-                    await msg.edit_text(f"❌ Ошибка при загрузке расписания: {e}")
+                    await msg.edit_text("❌ Не удалось загрузить расписание. Попробуй позже.")
                 except Exception as err:
                     logging.error(f"Ошибка при отправке сообщения об ошибке пользователю {user_id}: {err}")
             raise
@@ -2545,20 +2632,22 @@ async def get_all_groups_timetable(force_reload: bool = False, user_id: int = No
     return all_groups_timetable_cache
 
 @dp.message(Command("teacher_timetable"))
-async def cmd_teacher_timetable(message: types.Message):
+async def cmd_teacher_timetable(message: types.Message, override: str = None):
     """
     Команда для получения расписания преподавателя.
     Использование: /teacher_timetable <Фамилия преподавателя>
     """
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer(
-            "Используйте: /teacher_timetable <Фамилия преподавателя>\n\n"
-            "Пример: /teacher_timetable Иванов"
-        )
-        return
-    
-    teacher_name = args[1]
+    if override is not None:
+        teacher_name = override
+    else:
+        args = message.text.split(maxsplit=1)
+        if len(args) < 2:
+            await message.answer(
+                "Используйте: /teacher_timetable <Фамилия преподавателя>\n\n"
+                "Пример: /teacher_timetable Иванов"
+            )
+            return
+        teacher_name = args[1]
     user_id = message.from_user.id
     logging.info(f"Пользователь {user_id} запросил расписание преподавателя: {teacher_name}")
     
@@ -2598,23 +2687,25 @@ async def cmd_teacher_timetable(message: types.Message):
     
     except Exception as e:
         logging.error(f"Ошибка при получении расписания преподавателя: {e}", exc_info=True)
-        await message.answer(f"Ошибка при получении расписания: {e}")
+        await message.answer("⚠️ Не удалось загрузить расписание. Попробуй позже.")
 
 @dp.message(Command("classroom_timetable"))
-async def cmd_classroom_timetable(message: types.Message):
+async def cmd_classroom_timetable(message: types.Message, override: str = None):
     """
     Команда для получения расписания кабинета.
     Использование: /classroom_timetable <Номер кабинета>
     """
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer(
-            "Используйте: /classroom_timetable <Номер кабинета>\n\n"
-            "Пример: /classroom_timetable 101"
-        )
-        return
-    
-    classroom_number = args[1]
+    if override is not None:
+        classroom_number = override
+    else:
+        args = message.text.split(maxsplit=1)
+        if len(args) < 2:
+            await message.answer(
+                "Используйте: /classroom_timetable <Номер кабинета>\n\n"
+                "Пример: /classroom_timetable 101"
+            )
+            return
+        classroom_number = args[1]
     user_id = message.from_user.id
     logging.info(f"Пользователь {user_id} запросил расписание кабинета: {classroom_number}")
     
@@ -2654,7 +2745,7 @@ async def cmd_classroom_timetable(message: types.Message):
     
     except Exception as e:
         logging.error(f"Ошибка при получении расписания кабинета: {e}", exc_info=True)
-        await message.answer(f"Ошибка при получении расписания: {e}")
+        await message.answer("⚠️ Не удалось загрузить расписание. Попробуй позже.")
 
 @dp.message(Command("teachers"))
 async def cmd_teachers(message: types.Message):
@@ -2712,11 +2803,11 @@ async def cmd_teachers(message: types.Message):
     
     except Exception as e:
         logging.error(f"Ошибка при получении списка преподавателей для пользователя {user_id}: {e}", exc_info=True)
-        await message.answer(f"Ошибка при получении списка преподавателей: {e}")
+        await message.answer("⚠️ Не удалось получить список преподавателей. Попробуй позже.")
 
 
 @dp.message(Command("send_lk"))
-async def cmd_send_lk(message: types.Message):
+async def cmd_send_lk(message: types.Message, override_text: str = None):
     """
     Команда для отправки сообщения в ЛК.
     Варианты:
@@ -2726,8 +2817,11 @@ async def cmd_send_lk(message: types.Message):
     user_id = message.from_user.id
 
     try:
-        # Убираем команду из начала
-        text_after_command = message.text[len("/send_lk"):].strip()
+        # Текст из меню (override_text) либо из самой команды /send_lk
+        if override_text is not None:
+            text_after_command = override_text.strip()
+        else:
+            text_after_command = message.text[len("/send_lk"):].strip()
         if not text_after_command:
             await message.answer(
                 "Использование:\n"
@@ -2922,7 +3016,7 @@ async def cmd_send_lk(message: types.Message):
 
     except Exception as e:
         logging.error(f"Ошибка при отправке сообщения в ЛК для пользователя {user_id}: {e}", exc_info=True)
-        await message.answer(f"❌ Ошибка при отправке сообщения: {e}")
+        await message.answer("❌ Не удалось отправить сообщение. Попробуй позже.")
 
 
 @dp.callback_query(F.data.startswith("lk_send_"))
@@ -2968,7 +3062,7 @@ async def handle_lk_send_callback(callback_query: CallbackQuery):
 
     except Exception as e:
         logging.error(f"Ошибка при обработке callback отправки ЛК сообщения для пользователя {user_id}: {e}", exc_info=True)
-        await callback_query.answer(f"❌ Ошибка: {e}", show_alert=True)
+        await callback_query.answer("⚠️ Что-то пошло не так. Попробуй позже.", show_alert=True)
 
 @dp.message(Command("classrooms"))
 async def cmd_classrooms(message: types.Message):
@@ -3024,7 +3118,7 @@ async def cmd_classrooms(message: types.Message):
     
     except Exception as e:
         logging.error(f"Ошибка при получении списка кабинетов для пользователя {user_id}: {e}", exc_info=True)
-        await message.answer(f"Ошибка при получении списка кабинетов: {e}")
+        await message.answer("⚠️ Не удалось получить список аудиторий. Попробуй позже.")
 
 @dp.message(Command("groups"))
 async def cmd_groups(message: types.Message):
@@ -3057,26 +3151,28 @@ async def cmd_groups(message: types.Message):
     
     except Exception as e:
         logging.error(f"Ошибка при получении списка групп для пользователя {user_id}: {e}", exc_info=True)
-        await message.answer(f"Ошибка при получении списка групп: {e}")
+        await message.answer("⚠️ Не удалось получить список групп. Попробуй позже.")
 
 @dp.message(Command("group_timetable"))
-async def cmd_group_timetable(message: types.Message):
+async def cmd_group_timetable(message: types.Message, override: str = None):
     """
     Команда для получения расписания группы.
     Использование: /group_timetable <ID_группы или название группы>
     Использует расписание из загруженного кэша всех групп.
     """
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer(
-            "Используйте: /group_timetable <ID_группы или название группы>\n\n"
-            "Пример: /group_timetable ИКПИ-22\n"
-            "Или: /group_timetable 12345\n\n"
-            "Для получения списка групп используйте: /groups"
-        )
-        return
-    
-    group_input = args[1]
+    if override is not None:
+        group_input = override
+    else:
+        args = message.text.split(maxsplit=1)
+        if len(args) < 2:
+            await message.answer(
+                "Используйте: /group_timetable <ID_группы или название группы>\n\n"
+                "Пример: /group_timetable ИКПИ-22\n"
+                "Или: /group_timetable 12345\n\n"
+                "Для получения списка групп используйте: /groups"
+            )
+            return
+        group_input = args[1]
     user_id = message.from_user.id
     logging.info(f"Пользователь {user_id} запросил расписание группы: {group_input}")
     
@@ -3177,7 +3273,7 @@ async def cmd_group_timetable(message: types.Message):
     
     except Exception as e:
         logging.error(f"Ошибка при получении расписания группы {group_input} для пользователя {user_id}: {e}", exc_info=True)
-        await message.answer(f"Ошибка при получении расписания: {e}")
+        await message.answer("⚠️ Не удалось загрузить расписание. Попробуй позже.")
 
 @dp.message(Command("reload_timetable"))
 async def cmd_reload_timetable(message: types.Message):
@@ -3197,14 +3293,14 @@ async def cmd_reload_timetable(message: types.Message):
             await message.answer(f"✅ Расписание успешно перезагружено! Загружено {len(all_timetable)} групп.")
     except Exception as e:
         logging.error(f"Ошибка при перезагрузке расписания для пользователя {user_id}: {e}", exc_info=True)
-        await message.answer(f"❌ Ошибка при перезагрузке расписания: {e}")
+        await message.answer("❌ Не удалось перезагрузить расписание. Попробуй позже.")
 
 @dp.message(Command("messages"))
-async def cmd_messages(message: types.Message):
+async def cmd_messages(message: types.Message, uid: int = None):
     """
     Команда для просмотра входящих сообщений.
     """
-    user_id = message.from_user.id
+    user_id = uid if uid is not None else message.from_user.id
     logging.info(f"Пользователь {user_id} запросил просмотр сообщений")
     
     try:
@@ -3237,7 +3333,7 @@ async def cmd_messages(message: types.Message):
         
     except Exception as e:
         logging.error(f"Ошибка при получении сообщений для пользователя {user_id}: {e}", exc_info=True)
-        await message.answer(f"❌ Ошибка при получении сообщений: {e}")
+        await message.answer("❌ Не удалось загрузить сообщения. Попробуй позже.")
 
 async def show_message_list(user_id: int, chat_id: int, index: int):
     """
@@ -3421,7 +3517,7 @@ async def handle_message_callback(callback_query: CallbackQuery):
     
     except Exception as e:
         logging.error(f"Ошибка при обработке callback сообщений для пользователя {user_id}: {e}", exc_info=True)
-        await callback_query.answer(f"❌ Ошибка: {e}", show_alert=True)
+        await callback_query.answer("⚠️ Что-то пошло не так. Попробуй позже.", show_alert=True)
 
 async def auto_login_user(user_id):
     """
@@ -3435,6 +3531,7 @@ async def auto_login_user(user_id):
         return False
     
     email, password = result
+    password = decrypt_password(password)
     logging.info(f"Попытка автоматической авторизации для пользователя {user_id} (email: {email})")
     try:
         apis[user_id] = DebuggableBonchAPI()
@@ -3458,8 +3555,15 @@ async def auto_login_user(user_id):
 
 async def auto_start_lesson(user_id):
     """
-    Автоматически запускает автокликалку для пользователя, если она была активна.
+    Автоматически запускает автокликалку для пользователя при старте бота —
+    но только если пользователь не выключил её вручную (autoclick_enabled).
     """
+    if not get_autoclick_enabled(user_id):
+        logging.info(
+            "Автокликалка для пользователя %s выключена вручную — не запускаем при старте бота.",
+            user_id,
+        )
+        return
     if user_id in controllers:  # Проверяем, есть ли контроллер для пользователя
         controller = controllers[user_id]
         if not controller.is_running:  # Если автокликалка не запущена, запускаем её
@@ -3488,7 +3592,7 @@ async def get_message_api(user_id: int) -> Optional[TimetableBonchAPI]:
         result = cursor.fetchone()
         if result:
             email, password = result
-            await existing_api.login(email, password)
+            await existing_api.login(email, decrypt_password(password))
             if not hasattr(existing_api, 'cookies') or not existing_api.cookies:
                 return None
         else:
@@ -3514,21 +3618,23 @@ async def lk_search_recipients(message_api: TimetableBonchAPI, query: str):
     URL = "https://lk.sut.ru/cabinet/subconto/search.php"
 
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(10), trust_env=False) as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(40), trust_env=True, headers=BROWSER_HEADERS, connector=aiohttp.TCPConnector(force_close=True)) as session:
             async with session.get(URL, params={"value": query}, cookies=message_api.cookies, proxy=None) as response:
+                status = response.status
                 response.raise_for_status()
                 html_text = await response.text()
 
         # Парсим строки вида "ФИО (id=12345)"
-        pattern = r">([^<]+?) \(id=(\d+)\)</td>"
-        results = []
-        for match in re.finditer(pattern, html_text):
-            name = match.group(1).strip()
-            rid = int(match.group(2))
-            label = f"{name} (id={rid})"
-            results.append({"id": rid, "label": label})
+        results = parsers.parse_recipients(html_text)
 
-        logging.info("Найдено %s получателей по запросу %r", len(results), query)
+        if results:
+            logging.info("Найдено %s получателей по запросу %r", len(results), query)
+        else:
+            logging.warning(
+                "Поиск получателей %r: 0 совпадений (HTTP %s, длина %s). Фрагмент ответа: %s",
+                query, status, len(html_text or ""),
+                (html_text or "")[:400].replace("\n", " "),
+            )
         return results
     except Exception as e:
         logging.error(f"Ошибка при поиске получателей в ЛК: {type(e).__name__} {e}", exc_info=True)
@@ -3551,7 +3657,7 @@ async def lk_upload_file(message_api: TimetableBonchAPI, filename: str, id: int 
         data.add_field("upload", "")
         data.add_field('userfile', file, filename=os.path.basename(filename))
 
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(10), trust_env=False) as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(40), trust_env=True, headers=BROWSER_HEADERS, connector=aiohttp.TCPConnector(force_close=True)) as session:
             async with session.post(URL, cookies=message_api.cookies, data=data, proxy=None) as response:
                 response.raise_for_status()
                 text = await response.text()
@@ -3590,11 +3696,12 @@ async def lk_send_message(
     }
 
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(10), trust_env=False) as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(40), trust_env=True, headers=BROWSER_HEADERS, connector=aiohttp.TCPConnector(force_close=True)) as session:
             async with session.post(URL, cookies=message_api.cookies, data=data, proxy=None) as response:
                 response.raise_for_status()
                 text = await response.text()
-                if text == '':
+                # Успех — пустой ответ; ЛК часто отдаёт его как пробелы/перевод строки.
+                if text.strip() == '':
                     logging.info('Сообщение в ЛК успешно отправлено (adresat=%s)', recipient_id)
                     return True
                 else:
@@ -3609,25 +3716,840 @@ async def lk_send_message(
         logging.error(f'Ошибка при отправке сообщения в ЛК: {type(e).__name__} {e}', exc_info=True)
         return False
 
+# ==========================================================================
+#  Пользовательский интерфейс: меню, онбординг, пошаговые диалоги
+# ==========================================================================
+
+BTN_SCHEDULE = "📅 Расписание"
+BTN_AUTOCLICK = "✅ Автоотметка"
+BTN_MESSAGES = "✉️ Сообщения"
+BTN_PROFILE = "👤 Профиль"
+BTN_HELP = "❓ Помощь"
+
+
+class UIStates(StatesGroup):
+    login_email = State()
+    login_password = State()
+    ask_group = State()
+    ask_teacher = State()
+    ask_classroom = State()
+    write_recipient = State()
+    write_pick = State()
+    write_title = State()
+    write_text = State()
+
+
+def main_menu_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_SCHEDULE), KeyboardButton(text=BTN_AUTOCLICK)],
+            [KeyboardButton(text=BTN_MESSAGES), KeyboardButton(text=BTN_PROFILE)],
+            [KeyboardButton(text=BTN_HELP)],
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Выбери раздел в меню снизу",
+    )
+
+
+HELP_TEXT = (
+    "❓ <b>Помощь — SatanBonchBot</b>\n\n"
+    "Я помощник студента СПбГУТ. Разделы — кнопками в меню снизу.\n\n"
+    "📅 <b>Расписание</b>\n"
+    "Расписание групп, преподавателей и аудиторий. Доступно без входа в ЛК. "
+    "После входа добавляется «Моё расписание».\n\n"
+    "✅ <b>Автоотметка</b>\n"
+    "Бот сам отмечает тебя на парах в личном кабинете, пока идёт занятие. "
+    "Нужен вход в ЛК. Включается и выключается кнопкой.\n\n"
+    "✉️ <b>Сообщения</b>\n"
+    "Чтение входящих и отправка сообщений через ЛК. Нужен вход в ЛК.\n\n"
+    "👤 <b>Профиль</b>\n"
+    "Твой email, статус входа в ЛК, настройки уведомлений, "
+    "повторный вход и выход.\n\n"
+    "🔑 <b>Вход в личный кабинет</b>\n"
+    "Кнопка «🔑 Войти в ЛК» либо команда одной строкой:\n"
+    "<code>/login email пароль</code>\n"
+    "Пароль хранится в зашифрованном виде.\n\n"
+    "🔔 <b>Уведомления</b>\n"
+    "Бот предупреждает о начале пар. Включение и время напоминания "
+    "настраиваются в разделе «👤 Профиль» → «🔔 Уведомления».\n\n"
+    "<b>Команды:</b>\n"
+    "/start — главное меню\n"
+    "/login — войти в ЛК\n"
+    "/help — эта справка\n"
+    "/cancel — отменить текущее действие"
+)
+
+
+def cancel_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="m:cancel")]]
+    )
+
+
+def login_prompt_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔑 Войти в ЛК", callback_data="m:login")]]
+    )
+
+
+def schedule_menu_kb(logged_in: bool) -> InlineKeyboardMarkup:
+    rows = []
+    if logged_in:
+        rows.append([InlineKeyboardButton(text="🎓 Моё расписание", callback_data="m:sched:my")])
+    rows.append([InlineKeyboardButton(text="👥 Группа", callback_data="m:sched:group")])
+    rows.append([InlineKeyboardButton(text="🧑‍🏫 Преподаватель", callback_data="m:sched:teacher")])
+    rows.append([InlineKeyboardButton(text="🚪 Аудитория", callback_data="m:sched:room")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def autoclick_menu_kb(is_running: bool) -> InlineKeyboardMarkup:
+    toggle = (
+        InlineKeyboardButton(text="⏹ Выключить", callback_data="m:auto:stop")
+        if is_running
+        else InlineKeyboardButton(text="▶️ Включить", callback_data="m:auto:start")
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [toggle],
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="m:auto:refresh")],
+        [InlineKeyboardButton(text="🔔 Проверить уведомления", callback_data="m:auto:notify")],
+    ])
+
+
+def messages_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📥 Входящие", callback_data="m:msg:inbox")],
+        [InlineKeyboardButton(text="✏️ Написать", callback_data="m:msg:write")],
+    ])
+
+
+def profile_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔔 Уведомления", callback_data="m:profile:notify")],
+        [InlineKeyboardButton(text="🔄 Войти заново", callback_data="m:profile:relogin")],
+        [InlineKeyboardButton(text="🚪 Выйти", callback_data="m:profile:logout")],
+    ])
+
+
+def notify_settings_text(enabled: bool, minutes: int) -> str:
+    if enabled:
+        return (
+            "🔔 Настройки уведомлений\n\n"
+            f"Предупреждаю о начале пары за {minutes} мин.\n"
+            "Выбери, за сколько минут предупреждать, или выключи уведомления."
+        )
+    return (
+        "🔕 Настройки уведомлений\n\n"
+        "Уведомления о начале пар выключены."
+    )
+
+
+def notify_settings_kb(enabled: bool, minutes: int) -> InlineKeyboardMarkup:
+    toggle_text = "🔔 Уведомления включены" if enabled else "🔕 Уведомления выключены"
+    rows = [[InlineKeyboardButton(text=toggle_text, callback_data="m:notify:toggle")]]
+    if enabled:
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{opt} мин" + (" ✅" if opt == minutes else ""),
+                callback_data=f"m:notify:min:{opt}",
+            )
+            for opt in NOTIFY_MINUTE_OPTIONS
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def is_registered(user_id: int) -> bool:
+    cursor.execute('SELECT 1 FROM users WHERE user_id = ?', (user_id,))
+    return cursor.fetchone() is not None
+
+
+# --- Настройки уведомлений о парах -------------------------------------------
+NOTIFY_DEFAULT_MINUTES = 10
+NOTIFY_MINUTE_OPTIONS = (5, 10, 15, 30)
+
+
+def get_notify_settings(user_id: int) -> tuple[bool, int]:
+    """Возвращает (уведомления включены, за сколько минут предупреждать о паре)."""
+    cursor.execute(
+        'SELECT notify_enabled, notify_minutes FROM users WHERE user_id = ?',
+        (user_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return True, NOTIFY_DEFAULT_MINUTES
+    enabled_raw, minutes_raw = row
+    enabled = True if enabled_raw is None else bool(enabled_raw)
+    minutes = int(minutes_raw) if minutes_raw else NOTIFY_DEFAULT_MINUTES
+    return enabled, minutes
+
+
+def set_notify_enabled(user_id: int, enabled: bool) -> None:
+    with conn:
+        cursor.execute(
+            'UPDATE users SET notify_enabled = ? WHERE user_id = ?',
+            (1 if enabled else 0, user_id),
+        )
+
+
+def set_notify_minutes(user_id: int, minutes: int) -> None:
+    with conn:
+        cursor.execute(
+            'UPDATE users SET notify_minutes = ? WHERE user_id = ?',
+            (minutes, user_id),
+        )
+
+
+def get_autoclick_enabled(user_id: int) -> bool:
+    """
+    Включена ли автоотметка пользователем. Учитывается при автозапуске
+    автокликалки на старте бота: выключил вручную — не запускаем снова.
+    """
+    cursor.execute('SELECT autoclick_enabled FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    if not row or row[0] is None:
+        return True
+    return bool(row[0])
+
+
+def set_autoclick_enabled(user_id: int, enabled: bool) -> None:
+    with conn:
+        cursor.execute(
+            'UPDATE users SET autoclick_enabled = ? WHERE user_id = ?',
+            (1 if enabled else 0, user_id),
+        )
+
+
+async def perform_login(user_id: int, email: str, password: str) -> bool:
+    """Входит в ЛК и сохраняет данные в БД только при успешном входе."""
+    try:
+        api = DebuggableBonchAPI()
+        ok = await api.login(email, password)
+        if not ok:
+            return False
+        apis[user_id] = api
+        controllers[user_id] = LessonController(api, bot, user_id)
+        cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
+        existing = cursor.fetchone()
+        encrypted_password = encrypt_password(password)
+        with conn:
+            if existing:
+                cursor.execute('UPDATE users SET email = ?, password = ? WHERE user_id = ?',
+                               (email, encrypted_password, user_id))
+            else:
+                cursor.execute('INSERT INTO users (user_id, email, password) VALUES (?, ?, ?)',
+                               (user_id, email, encrypted_password))
+        return True
+    except Exception as e:
+        logging.error("perform_login: ошибка для %s: %s", user_id, e, exc_info=True)
+        return False
+
+
+async def send_autoclick_panel(user_id: int, chat_id: int):
+    """Показывает панель автоотметки со статусом и кнопками."""
+    if user_id not in controllers:
+        await auto_login_user(user_id)
+    if user_id not in controllers:
+        await bot.send_message(
+            chat_id,
+            "Не удалось войти в ЛК. Попробуй войти заново.",
+            reply_markup=login_prompt_kb(),
+        )
+        return
+    controller = controllers[user_id]
+    status_text = await controller.get_status()
+    await bot.send_message(
+        chat_id,
+        f"✅ Автоотметка\n\n{status_text}",
+        reply_markup=autoclick_menu_kb(controller.is_running),
+    )
+
+
+# --- Кнопки главного меню (reply-клавиатура) ---
+
+@dp.message(F.text == BTN_SCHEDULE)
+async def menu_schedule(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "📅 Чьё расписание показать?",
+        reply_markup=schedule_menu_kb(is_registered(message.from_user.id)),
+    )
+
+
+@dp.message(F.text == BTN_AUTOCLICK)
+async def menu_autoclick(message: types.Message, state: FSMContext):
+    await state.clear()
+    user_id = message.from_user.id
+    if not is_registered(user_id):
+        await message.answer(
+            "✅ Автоотметка сама отмечает тебя на парах в ЛК.\n"
+            "Чтобы включить — войди в личный кабинет.",
+            reply_markup=login_prompt_kb(),
+        )
+        return
+    await send_autoclick_panel(user_id, message.chat.id)
+
+
+@dp.message(F.text == BTN_MESSAGES)
+async def menu_messages(message: types.Message, state: FSMContext):
+    await state.clear()
+    if not is_registered(message.from_user.id):
+        await message.answer(
+            "✉️ Здесь можно читать и отправлять сообщения в ЛК.\n"
+            "Для этого нужно войти в личный кабинет.",
+            reply_markup=login_prompt_kb(),
+        )
+        return
+    await message.answer("✉️ Сообщения личного кабинета:", reply_markup=messages_menu_kb())
+
+
+@dp.message(F.text == BTN_PROFILE)
+async def menu_profile(message: types.Message, state: FSMContext):
+    await state.clear()
+    user_id = message.from_user.id
+    if not is_registered(user_id):
+        await message.answer(
+            "👤 Ты ещё не вошёл в личный кабинет СПбГУТ.",
+            reply_markup=login_prompt_kb(),
+        )
+        return
+    cursor.execute('SELECT email FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    email = row[0] if row else "—"
+    active = "🟢 активен" if user_id in apis else "🟡 восстановится при первом действии"
+    notify_enabled, notify_minutes = get_notify_settings(user_id)
+    notify_line = (
+        f"🔔 Уведомления: за {notify_minutes} мин до пары"
+        if notify_enabled
+        else "🔕 Уведомления: выключены"
+    )
+    await message.answer(
+        f"👤 Профиль\n\n📧 Email: {email}\n🔑 Вход в ЛК: {active}\n{notify_line}",
+        reply_markup=profile_menu_kb(),
+    )
+
+
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(HELP_TEXT, parse_mode="HTML", reply_markup=main_menu_kb())
+
+
+@dp.message(F.text == BTN_HELP)
+async def menu_help(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(HELP_TEXT, parse_mode="HTML")
+
+
+# --- /cancel и отмена диалога ---
+
+@dp.message(Command("cancel"))
+async def cmd_cancel(message: types.Message, state: FSMContext):
+    had_state = await state.get_state()
+    await state.clear()
+    await message.answer(
+        "Окей, отменил." if had_state else "Сейчас нечего отменять.",
+        reply_markup=main_menu_kb(),
+    )
+
+
+@dp.callback_query(F.data == "m:cancel")
+async def cb_cancel(callback_query: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback_query.answer("Отменено")
+    try:
+        await callback_query.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback_query.message.answer("Окей. Меню — снизу 👇", reply_markup=main_menu_kb())
+
+
+# --- Вход в ЛК ---
+
+@dp.callback_query(F.data == "m:login")
+async def cb_login(callback_query: CallbackQuery, state: FSMContext):
+    await callback_query.answer()
+    await state.set_state(UIStates.login_email)
+    await callback_query.message.answer(
+        "🔑 Вход в личный кабинет СПбГУТ.\n\nВведи свой email (логин от ЛК):",
+        reply_markup=cancel_kb(),
+    )
+
+
+@dp.message(UIStates.login_email)
+async def fsm_login_email(message: types.Message, state: FSMContext):
+    email = (message.text or "").strip()
+    if not EMAIL_RE.match(email):
+        await message.answer(
+            "Это не похоже на email. Введи корректный адрес, например ivan@mail.ru:",
+            reply_markup=cancel_kb(),
+        )
+        return
+    await state.update_data(email=email)
+    await state.set_state(UIStates.login_password)
+    await message.answer("Принято. Теперь введи пароль от ЛК:", reply_markup=cancel_kb())
+
+
+@dp.message(UIStates.login_password)
+async def fsm_login_password(message: types.Message, state: FSMContext):
+    password = message.text or ""
+    data = await state.get_data()
+    email = data.get("email", "")
+    await state.clear()
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    retry_after = check_login_rate_limit(message.from_user.id)
+    if retry_after:
+        await message.answer(
+            f"⏳ Слишком много попыток входа. Попробуй снова через {format_retry_after(retry_after)}.",
+            reply_markup=login_prompt_kb(),
+        )
+        return
+    status = await message.answer("⏳ Вхожу в ЛК...")
+    ok = await perform_login(message.from_user.id, email, password)
+    if ok:
+        try:
+            await status.edit_text("✅ Готово! Ты вошёл в личный кабинет.")
+        except Exception:
+            pass
+        await message.answer("Теперь доступны все разделы 👇", reply_markup=main_menu_kb())
+    else:
+        try:
+            await status.edit_text("❌ Не удалось войти. Проверь email и пароль.")
+        except Exception:
+            pass
+        await message.answer("Попробовать ещё раз?", reply_markup=login_prompt_kb())
+
+
+# --- Расписание ---
+
+@dp.callback_query(F.data == "m:sched:my")
+async def cb_sched_my(callback_query: CallbackQuery, state: FSMContext):
+    await state.clear()
+    user_id = callback_query.from_user.id
+    if not is_registered(user_id):
+        await callback_query.answer()
+        await callback_query.message.answer("Сначала войди в ЛК.", reply_markup=login_prompt_kb())
+        return
+    await callback_query.answer("Загружаю...")
+    await cmd_timetable(callback_query.message, uid=user_id)
+
+
+@dp.callback_query(F.data == "m:sched:group")
+async def cb_sched_group(callback_query: CallbackQuery, state: FSMContext):
+    await callback_query.answer()
+    await state.set_state(UIStates.ask_group)
+    await callback_query.message.answer(
+        "👥 Введи название или ID группы (например: ИКВТ-21):",
+        reply_markup=cancel_kb(),
+    )
+
+
+@dp.callback_query(F.data == "m:sched:teacher")
+async def cb_sched_teacher(callback_query: CallbackQuery, state: FSMContext):
+    await callback_query.answer()
+    await state.set_state(UIStates.ask_teacher)
+    await callback_query.message.answer(
+        "🧑‍🏫 Введи фамилию преподавателя (например: Иванов):",
+        reply_markup=cancel_kb(),
+    )
+
+
+@dp.callback_query(F.data == "m:sched:room")
+async def cb_sched_room(callback_query: CallbackQuery, state: FSMContext):
+    await callback_query.answer()
+    await state.set_state(UIStates.ask_classroom)
+    await callback_query.message.answer(
+        "🚪 Введи номер аудитории (например: 401):",
+        reply_markup=cancel_kb(),
+    )
+
+
+@dp.message(UIStates.ask_group)
+async def fsm_ask_group(message: types.Message, state: FSMContext):
+    await state.clear()
+    await cmd_group_timetable(message, override=(message.text or "").strip())
+
+
+@dp.message(UIStates.ask_teacher)
+async def fsm_ask_teacher(message: types.Message, state: FSMContext):
+    await state.clear()
+    await cmd_teacher_timetable(message, override=(message.text or "").strip())
+
+
+@dp.message(UIStates.ask_classroom)
+async def fsm_ask_classroom(message: types.Message, state: FSMContext):
+    await state.clear()
+    await cmd_classroom_timetable(message, override=(message.text or "").strip())
+
+
+# --- Автоотметка ---
+
+@dp.callback_query(F.data.startswith("m:auto:"))
+async def cb_autoclick(callback_query: CallbackQuery, state: FSMContext):
+    await state.clear()
+    user_id = callback_query.from_user.id
+    action = callback_query.data.split(":")[2]
+
+    if user_id not in controllers:
+        await auto_login_user(user_id)
+    if user_id not in controllers:
+        await callback_query.answer()
+        await callback_query.message.answer(
+            "Не удалось войти в ЛК. Попробуй войти заново.",
+            reply_markup=login_prompt_kb(),
+        )
+        return
+
+    controller = controllers[user_id]
+
+    if action == "notify":
+        await callback_query.answer()
+        await cmd_test_notify(callback_query.message, uid=user_id)
+        return
+
+    if action == "start":
+        if controller.is_running:
+            await callback_query.answer("Уже включена")
+        else:
+            controller.task = asyncio.create_task(controller.start_lesson())
+            await callback_query.answer("Включил ✅")
+        set_autoclick_enabled(user_id, True)
+        running = True
+    elif action == "stop":
+        if controller.is_running:
+            await controller.stop_lesson(user_id)
+            await callback_query.answer("Выключил ⏹")
+        else:
+            await callback_query.answer("Уже выключена")
+        set_autoclick_enabled(user_id, False)
+        running = False
+    else:
+        await callback_query.answer("Обновил")
+        running = controller.is_running
+
+    status_text = await controller.get_status()
+    panel = f"✅ Автоотметка\n\n{status_text}"
+    try:
+        await callback_query.message.edit_text(panel, reply_markup=autoclick_menu_kb(running))
+    except Exception:
+        await callback_query.message.answer(panel, reply_markup=autoclick_menu_kb(running))
+
+
+# --- Сообщения ЛК ---
+
+@dp.callback_query(F.data == "m:msg:inbox")
+async def cb_msg_inbox(callback_query: CallbackQuery, state: FSMContext):
+    await state.clear()
+    user_id = callback_query.from_user.id
+    if not is_registered(user_id):
+        await callback_query.answer()
+        await callback_query.message.answer("Сначала войди в ЛК.", reply_markup=login_prompt_kb())
+        return
+    await callback_query.answer("Загружаю...")
+    await cmd_messages(callback_query.message, uid=user_id)
+
+
+@dp.callback_query(F.data == "m:msg:write")
+async def cb_msg_write(callback_query: CallbackQuery, state: FSMContext):
+    user_id = callback_query.from_user.id
+    if not is_registered(user_id):
+        await callback_query.answer()
+        await callback_query.message.answer("Сначала войди в ЛК.", reply_markup=login_prompt_kb())
+        return
+    await callback_query.answer()
+    await state.set_state(UIStates.write_recipient)
+    await callback_query.message.answer(
+        "✏️ Кому отправить?\n\nВведи ID получателя в ЛК или его фамилию (можно с инициалами):",
+        reply_markup=cancel_kb(),
+    )
+
+
+def title_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⏭ Без темы", callback_data="mw:notitle")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="m:cancel")],
+    ])
+
+
+RECIPIENTS_PER_PAGE = 8
+
+
+def recipients_page_kb(results: list, page: int) -> InlineKeyboardMarkup:
+    total = len(results)
+    pages = max(1, (total + RECIPIENTS_PER_PAGE - 1) // RECIPIENTS_PER_PAGE)
+    page = max(0, min(page, pages - 1))
+    start = page * RECIPIENTS_PER_PAGE
+    rows = [
+        [InlineKeyboardButton(text=results[i]["label"], callback_data=f"mw:pick:{i}")]
+        for i in range(start, min(start + RECIPIENTS_PER_PAGE, total))
+    ]
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"mw:page:{page - 1}"))
+    if pages > 1:
+        nav.append(InlineKeyboardButton(text=f"{page + 1}/{pages}", callback_data="mw:noop"))
+    if page < pages - 1:
+        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"mw:page:{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="m:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def start_recipient_pick(target_message: types.Message, user_id: int, query: str, state: FSMContext):
+    """Ищет получателя: ID или единственный — сразу к тексту, несколько — список с прокруткой."""
+    message_api = await get_message_api(user_id)
+    if not message_api:
+        await state.clear()
+        await target_message.answer(
+            "❌ Не удалось войти в ЛК. Попробуй войти заново.",
+            reply_markup=login_prompt_kb(),
+        )
+        return
+
+    if query.isdigit():
+        await state.update_data(recipient_id=int(query), recipient_label=f"id={query}")
+        await state.set_state(UIStates.write_title)
+        await target_message.answer(
+            f"Получатель: id={query}\n\nВведи тему сообщения:",
+            reply_markup=title_kb(),
+        )
+        return
+
+    status = await target_message.answer(f"⏳ Ищу получателя «{query}»...")
+    results = await lk_search_recipients(message_api, query)
+
+    if not results:
+        await state.set_state(UIStates.write_recipient)
+        await status.edit_text(
+            f"❌ Не нашёл получателя «{query}».\n"
+            "Введи фамилию ещё раз (без инициалов) или числовой ID:",
+            reply_markup=cancel_kb(),
+        )
+        return
+
+    if len(results) == 1:
+        r = results[0]
+        await state.update_data(recipient_id=r["id"], recipient_label=r["label"])
+        await state.set_state(UIStates.write_title)
+        await status.edit_text(
+            f"Получатель: {r['label']}\n\nВведи тему сообщения:",
+            reply_markup=title_kb(),
+        )
+        return
+
+    await state.update_data(results=results)
+    await state.set_state(UIStates.write_pick)
+    await status.edit_text(
+        f"🔎 Нашёл {len(results)} получателей по запросу «{query}».\n"
+        "Выбери нужного (или введи фамилию точнее):",
+        reply_markup=recipients_page_kb(results, 0),
+    )
+
+
+@dp.message(UIStates.write_recipient)
+async def fsm_write_recipient(message: types.Message, state: FSMContext):
+    query = (message.text or "").strip()
+    if not query:
+        await message.answer("Введи ID или фамилию получателя:", reply_markup=cancel_kb())
+        return
+    await start_recipient_pick(message, message.from_user.id, query, state)
+
+
+@dp.message(UIStates.write_pick)
+async def fsm_write_pick_refine(message: types.Message, state: FSMContext):
+    query = (message.text or "").strip()
+    if not query:
+        return
+    await start_recipient_pick(message, message.from_user.id, query, state)
+
+
+@dp.callback_query(F.data == "mw:noop")
+async def cb_write_noop(callback_query: CallbackQuery):
+    await callback_query.answer()
+
+
+@dp.callback_query(F.data.startswith("mw:page:"))
+async def cb_write_page(callback_query: CallbackQuery, state: FSMContext):
+    await callback_query.answer()
+    page = int(callback_query.data.split(":")[2])
+    data = await state.get_data()
+    results = data.get("results", [])
+    if not results:
+        return
+    try:
+        await callback_query.message.edit_reply_markup(reply_markup=recipients_page_kb(results, page))
+    except Exception:
+        pass
+
+
+@dp.callback_query(F.data.startswith("mw:pick:"))
+async def cb_write_pick(callback_query: CallbackQuery, state: FSMContext):
+    idx = int(callback_query.data.split(":")[2])
+    data = await state.get_data()
+    results = data.get("results", [])
+    if idx < 0 or idx >= len(results):
+        await callback_query.answer("Список устарел, начни заново.", show_alert=True)
+        return
+    r = results[idx]
+    await state.update_data(recipient_id=r["id"], recipient_label=r["label"])
+    await state.set_state(UIStates.write_title)
+    await callback_query.answer()
+    try:
+        await callback_query.message.edit_text(f"✅ Получатель: {r['label']}")
+    except Exception:
+        pass
+    await callback_query.message.answer("Введи тему сообщения:", reply_markup=title_kb())
+
+
+@dp.message(UIStates.write_title)
+async def fsm_write_title(message: types.Message, state: FSMContext):
+    title = (message.text or "").strip()
+    await state.update_data(title=title)
+    await state.set_state(UIStates.write_text)
+    await message.answer("Тема принята. Теперь введи текст сообщения:", reply_markup=cancel_kb())
+
+
+@dp.callback_query(F.data == "mw:notitle")
+async def cb_notitle(callback_query: CallbackQuery, state: FSMContext):
+    await state.update_data(title="")
+    await state.set_state(UIStates.write_text)
+    await callback_query.answer()
+    try:
+        await callback_query.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback_query.message.answer("Без темы. Введи текст сообщения:", reply_markup=cancel_kb())
+
+
+@dp.message(UIStates.write_text)
+async def fsm_write_text(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Текст пустой. Введи текст сообщения:", reply_markup=cancel_kb())
+        return
+    data = await state.get_data()
+    recipient_id = data.get("recipient_id")
+    recipient_label = data.get("recipient_label") or (f"id={recipient_id}" if recipient_id else "—")
+    title = data.get("title", "")
+    await state.clear()
+    if recipient_id is None:
+        await message.answer(
+            "Получатель не выбран. Начни заново: ✉️ Сообщения → Написать.",
+            reply_markup=main_menu_kb(),
+        )
+        return
+    user_id = message.from_user.id
+    message_api = await get_message_api(user_id)
+    if not message_api:
+        await message.answer(
+            "❌ Не удалось войти в ЛК. Попробуй войти заново.",
+            reply_markup=login_prompt_kb(),
+        )
+        return
+    status = await message.answer(f"⏳ Отправляю сообщение: {recipient_label}...")
+    ok = await lk_send_message(
+        message_api=message_api, recipient_id=int(recipient_id),
+        title=title, message_text=text, idinfo=0,
+    )
+    await status.edit_text(
+        f"✅ Сообщение отправлено: {recipient_label}" if ok
+        else f"❌ Не удалось отправить сообщение: {recipient_label}"
+    )
+
+
+# --- Профиль ---
+
+@dp.callback_query(F.data == "m:profile:notify")
+async def cb_notify_settings(callback_query: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback_query.answer()
+    user_id = callback_query.from_user.id
+    enabled, minutes = get_notify_settings(user_id)
+    await callback_query.message.answer(
+        notify_settings_text(enabled, minutes),
+        reply_markup=notify_settings_kb(enabled, minutes),
+    )
+
+
+@dp.callback_query(F.data == "m:notify:toggle")
+async def cb_notify_toggle(callback_query: CallbackQuery, state: FSMContext):
+    user_id = callback_query.from_user.id
+    enabled, minutes = get_notify_settings(user_id)
+    new_enabled = not enabled
+    set_notify_enabled(user_id, new_enabled)
+    await callback_query.answer("Уведомления включены" if new_enabled else "Уведомления выключены")
+    await callback_query.message.edit_text(
+        notify_settings_text(new_enabled, minutes),
+        reply_markup=notify_settings_kb(new_enabled, minutes),
+    )
+
+
+@dp.callback_query(F.data.startswith("m:notify:min:"))
+async def cb_notify_minutes(callback_query: CallbackQuery, state: FSMContext):
+    user_id = callback_query.from_user.id
+    try:
+        minutes = int(callback_query.data.rsplit(":", 1)[-1])
+    except ValueError:
+        await callback_query.answer()
+        return
+    set_notify_minutes(user_id, minutes)
+    enabled, _ = get_notify_settings(user_id)
+    await callback_query.answer(f"Буду предупреждать за {minutes} мин")
+    await callback_query.message.edit_text(
+        notify_settings_text(enabled, minutes),
+        reply_markup=notify_settings_kb(enabled, minutes),
+    )
+
+
+@dp.callback_query(F.data == "m:profile:relogin")
+async def cb_relogin(callback_query: CallbackQuery, state: FSMContext):
+    await callback_query.answer()
+    await state.set_state(UIStates.login_email)
+    await callback_query.message.answer(
+        "🔄 Повторный вход. Введи email (логин от ЛК):",
+        reply_markup=cancel_kb(),
+    )
+
+
+@dp.callback_query(F.data == "m:profile:logout")
+async def cb_logout(callback_query: CallbackQuery, state: FSMContext):
+    await state.clear()
+    user_id = callback_query.from_user.id
+    controller = controllers.pop(user_id, None)
+    if controller is not None and getattr(controller, "is_running", False):
+        try:
+            await controller.stop_lesson(user_id)
+        except Exception:
+            pass
+    apis.pop(user_id, None)
+    with conn:
+        cursor.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
+    await callback_query.answer("Вы вышли")
+    await callback_query.message.answer(
+        "🚪 Ты вышел из личного кабинета, сохранённые данные удалены.\n"
+        "Расписание по-прежнему доступно без входа.",
+        reply_markup=main_menu_kb(),
+    )
+
+
+# --- Подсказка на нераспознанный ввод ---
+
+@dp.message()
+async def fallback_handler(message: types.Message):
+    await message.answer(
+        "Не понял 🤔 Пользуйся кнопками меню снизу 👇",
+        reply_markup=main_menu_kb(),
+    )
+
+
 async def set_bot_commands(bot: Bot):
     commands = [
-        BotCommand(command="start", description="Запустить бота"),
-        BotCommand(command="start_lesson", description="Запустить автокликалку"),
-        BotCommand(command="stop_lesson", description="Остановить автокликалку"),
-        BotCommand(command="status", description="Статус автокликалки"),
-        BotCommand(command="test_notify", description="Проверить уведомления"),
-        BotCommand(command="login", description="Войти в аккаунт"),
-        BotCommand(command="my_account", description="Просмотреть сохраненные данные"),
-        # BotCommand(command="timetable", description="Получить расписание"),
-        BotCommand(command="group_timetable", description="Расписание группы (название/ID)"),
-        BotCommand(command="teacher_timetable", description="Расписание преподавателя (фамилия)"),
-        BotCommand(command="classroom_timetable", description="Расписание кабинета (номер)"),
-        # BotCommand(command="groups", description="Список групп"),
-        # BotCommand(command="teachers", description="Список преподавателей"),
-        # BotCommand(command="classrooms", description="Список кабинетов"),
-        # BotCommand(command="reload_timetable", description="Перезагрузить расписание всех групп"),
-        BotCommand(command="messages", description="Просмотр входящих сообщений"),
-        BotCommand(command="send_lk", description="Отправить сообщение в ЛК")
+        BotCommand(command="start", description="Главное меню"),
+        BotCommand(command="help", description="Помощь и описание разделов"),
+        BotCommand(command="cancel", description="Отменить текущее действие"),
+        BotCommand(command="login", description="Войти в личный кабинет"),
     ]
     await bot.set_my_commands(commands)
 

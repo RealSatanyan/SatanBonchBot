@@ -3,16 +3,16 @@ services:
     build: .
     container_name: telegram_bot
     restart: unless-stopped
-    environment:
-      - BOT_TOKEN=${BOT_TOKEN}    # Используем переменные окружения из .env
-      - ALL_PROXY=${ALL_PROXY}    # Прокси только для Telegram (используется в main.py)
+    # BOT_TOKEN и ALL_PROXY бот читает сам из .env через load_dotenv().
+    # Файл .env попадает в контейнер через volume-монтирование ниже.
+    # ALL_PROXY — прокси ТОЛЬКО для запросов в ЛК/sut.ru (Telegram ходит напрямую).
     volumes:
-      - .:/app  # Монтируем текущую директорию для разработки
-    # logging:
-    #   driver: "json-file"
-    #   options:
-    #     max-size: "10m"  # Ограничиваем размер логов
-    #     max-file: "3"    # Храним только 3 файла логов
+      - .:/app  # Монтируем текущую директорию для разработки (включая .env)
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"  # Ограничиваем размер логов
+        max-file: "3"    # Храним только 3 файла логов
     deploy:
       resources:
         limits:

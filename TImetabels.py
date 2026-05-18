@@ -1,5 +1,6 @@
-import os, json, aiohttp, asyncio, threading, re
+import os, json, aiohttp, asyncio, threading, re, logging
 from bs4 import BeautifulSoup
+import parsers
 from datetime import datetime, timedelta, time
 from tqdm.asyncio import tqdm_asyncio
 from time import sleep
@@ -8,8 +9,16 @@ import html
 if os.name=='nt': import msvcrt
 else: import sys, fcntl, termios
 
+# sut.ru отвечает 403 на запросы без браузерного User-Agent,
+# поэтому все сессии к сервисам СПбГУТ ходят с этими заголовками.
+BROWSER_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+}
+
 class BonchAPI:
-    def __init__(self, first_day: str, limit: int = 80):
+    def __init__(self, first_day: str, limit: int = 6):
         self.first_day = datetime.strptime(first_day, '%Y-%m-%d')
         self.set_current_week()
         self.limit = limit
@@ -21,7 +30,7 @@ class BonchAPI:
         CABINET = 'https://lk.sut.ru/cabinet/'
         
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(10)) as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(40), trust_env=True, headers=BROWSER_HEADERS, connector=aiohttp.TCPConnector(force_close=True)) as session:
                 async with session.get(f'{CABINET}?login=no') as response:
                     response.raise_for_status()
                     self.cookies = response.cookies
@@ -47,7 +56,7 @@ class BonchAPI:
 
         while True:
             try:
-                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(10)) as session:
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(40), trust_env=True, headers=BROWSER_HEADERS, connector=aiohttp.TCPConnector(force_close=True)) as session:
                     async with session.get(URL, cookies=self.cookies) as response:
                         response.raise_for_status()
                         text = await response.text()
@@ -83,123 +92,60 @@ class BonchAPI:
             self.cur_week -= 1
 
     async def get_schet(self):
-        URL = 'https://cabinet.sut.ru/raspisanie_all_new'
+        # На новом cabinet.sut.ru параметр "schet" больше не используется.
+        # Метод оставлен как no-op для обратной совместимости с вызывающим кодом.
+        self.schet = None
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(URL) as response:
-                text = await response.text()
-                soup = BeautifulSoup(text, 'html.parser')
-                schet_option = soup.find('select', id='schet')
-                self.schet = schet_option.find('option', selected=True)['value']
+    @staticmethod
+    def _parse_id_name_pairs(text: str) -> dict:
+        """Разбирает ответ cabinet.sut.ru вида 'id1,name1;id2,name2;...' в {id: name}."""
+        return parsers.parse_id_name_pairs(text)
 
     async def get_groups(self):
-        URL = 'https://www.sut.ru/studentu/raspisanie/raspisanie-zanyatiy-studentov-ochnoy-i-vecherney-form-obucheniya'
+        # cabinet.sut.ru отдаёт группы по факультетам через POST-эндпоинт:
+        # сначала запрашиваем список факультетов, затем группы каждого факультета.
+        URL = 'https://cabinet.sut.ru/raspisanie_all_new.php'
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(URL) as response:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(20), trust_env=True, headers=BROWSER_HEADERS) as session:
+            async with session.post(URL, data={'choice': '1', 'type_z': '1', 'kurs': ''}) as response:
                 response.raise_for_status()
-                html = await response.text()
-                soup = BeautifulSoup(html, 'html.parser')
-                groups = soup.find_all('a', class_='vt256')
-                self.groups_id = {group['href'].split('=')[-1]: group['data-nm'] for group in groups}
+                faculties = self._parse_id_name_pairs(await response.text())
+
+            groups = {}
+            for faculty_id in faculties:
+                async with session.post(URL, data={'choice': '1', 'type_z': '1', 'kurs': '', 'faculty': faculty_id}) as response:
+                    response.raise_for_status()
+                    groups.update(self._parse_id_name_pairs(await response.text()))
+
+        self.groups_id = groups
 
     async def get_timetable(self, session: aiohttp.ClientSession, type_z: str, group_id: str) -> list:
-        URL = f'https://cabinet.sut.ru/raspisanie_all_new.php?schet={self.schet}&type_z={type_z}&group={group_id}'
+        # cabinet.sut.ru при нагрузке иногда не отдаёт расписание — повторяем до 3 раз.
+        result = 'Ошибка сервера'
+        for attempt in range(3):
+            result = await self._get_timetable_once(session, type_z, group_id)
+            if result != 'Ошибка сервера':
+                return result
+            if attempt < 2:
+                await asyncio.sleep(1.5 * (attempt + 1))
+        return result
+
+    async def _get_timetable_once(self, session: aiohttp.ClientSession, type_z: str, group_id: str) -> list:
+        URL = 'https://cabinet.sut.ru/raspisanie_all_new'
+        data = {'type_z': str(type_z), 'group': str(group_id), 'ok': 'Показать'}
 
         try:
-            async with session.get(URL) as response:
+            async with session.post(URL, data=data) as response:
+                status = response.status
                 text = await response.text()
 
-                soup = BeautifulSoup(text, 'html.parser')
-                table = soup.find('table', class_='simple-little-table')
-                if not table:
-                    # Логируем для отладки
-                    if group_id == '56252':
-                        print(f"DEBUG: Группа {group_id} - таблица не найдена. HTML длина: {len(text)}")
-                    return 'Расписание не найдено'
+                if status != 200:
+                    return 'Ошибка сервера'
 
-                timetable_data = []
-                rows = table.find('tbody').find_all('tr')[1:]
-                
-                # Логируем для отладки
-                if group_id == '56252':
-                    print(f"DEBUG: Группа {group_id} - найдено строк: {len(rows)}")
-
-                for row in rows:
-                    cells = row.find_all('td')
-                    if not cells:
-                        continue
-
-                    lesson_number_cell = cells[0]
-                    lesson_number_text = lesson_number_cell.text.strip()
-                    lesson_number_parts = lesson_number_text.split()
-                    lesson_number = lesson_number_parts[0] if lesson_number_parts else None
-
-                    lesson_time = None
-                    if lesson_number == '7':
-                        lesson_time = '20:00-21:35'
-                    elif len(lesson_number_parts) > 1:
-                        lesson_time = lesson_number_parts[1][1:-1]
-
-                    for day_index, cell in enumerate(cells[1:]):
-                        pair_divs = cell.find_all('div', class_='pair')
-                        if not pair_divs:
-                            continue
-
-                        day_name = self.days_of_week[day_index]
-                        day_of_week_int = self.days_of_week_str_to_int[day_name]
-
-                        for pair_div in pair_divs:
-                            subject_element = pair_div.find('span', class_='subect')
-                            subject = subject_element.strong.text.strip() if subject_element and subject_element.strong else None
-
-                            type_element = pair_div.find('span', class_='type')
-                            lesson_type = type_element.text.strip('()') if type_element else None
-
-                            teacher_element = pair_div.find('span', class_='teacher')
-                            teacher = teacher_element.text.strip() if teacher_element else None
-
-                            room_element = pair_div.find('span', class_='aud')
-                            room = room_element.text.split(':')[1].strip().replace('; Б22', '') if room_element and ':' in room_element.text else None
-
-                            weeks_element = pair_div.find('span', class_='weeks')
-                            week_number_str = weeks_element.text.strip('()').replace('н', '').replace('*', '') if weeks_element else None
-
-                            # Инициализируем weeks_list пустым списком по умолчанию
-                            weeks_list = []
-                            if week_number_str:
-                                weeks_list = [week.strip() for week in week_number_str.split(',') if week.strip()]
-
-                            # Обрабатываем только если есть недели
-                            if weeks_list:
-                                for week_str in weeks_list:
-                                    try:
-                                        week_number = int(week_str)
-                                        lesson_date = self.first_day + timedelta(days=week_number * 7 + day_of_week_int)
-
-                                        timetable_data.append({
-                                            'Группа': self.groups_id[group_id],
-                                            'Число': lesson_date.strftime('%Y.%m.%d'),
-                                            'День недели': day_name,
-                                            'Номер недели': week_number,
-                                            'Номер дня недели': day_of_week_int,
-                                            'Номер занятия': lesson_number,
-                                            'Время занятия': lesson_time,
-                                            'Предмет': subject,
-                                            'Тип занятия': lesson_type,
-                                            'ФИО преподавателя': teacher,
-                                            'Номер кабинета': room,
-                                        })
-                                    except (ValueError, TypeError):
-                                        # Пропускаем некорректные номера недель
-                                        continue
-                
-                # Логируем для отладки
-                if group_id == '56252':
-                    print(f"DEBUG: Группа {group_id} - итого занятий: {len(timetable_data)}")
-                
-                return sorted(timetable_data, key=lambda x: (x['Номер недели'], x['Номер дня недели']))
+                group_name = self.groups_id.get(group_id, group_id)
+                return parsers.parse_timetable_table(text, group_name, self.first_day)
         except Exception as e:
+            logging.error("Ошибка при разборе расписания группы %s: %s", group_id, e, exc_info=True)
             return 'Ошибка сервера'
 
     async def all_groups_timetable(self) -> dict:
@@ -211,15 +157,15 @@ class BonchAPI:
         timetable = {}
         group_items = list(self.groups_id.items())
         connector = aiohttp.TCPConnector(limit=self.limit)
-        async with aiohttp.ClientSession(connector=connector) as session:
+        async with aiohttp.ClientSession(connector=connector, trust_env=True, headers=BROWSER_HEADERS) as session:
             tasks = [self.get_timetable(session, '1', group_id) for group_id, _ in group_items]
             results = await tqdm_asyncio.gather(*tasks, desc='Загрузка групп', unit=' Групп',
                 bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} | {rate_fmt}{postfix}')
             timetable = {group_name: results[index] for index, (_, group_name) in enumerate(group_items) if not isinstance(results[index], str)}
         self.save_to_json(timetable)
         end = datetime.now()
-        print(f'Всего групп получено: {len(timetable)}')
-        print(f'Потрачено времени: {(end - start).total_seconds()} секунд\n')
+        logging.info('Всего групп получено: %s', len(timetable))
+        logging.info('Потрачено времени: %s секунд', (end - start).total_seconds())
         return timetable
 
     @staticmethod
@@ -346,19 +292,19 @@ class BonchAPI:
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(timetable, f, indent=4, ensure_ascii=False)
-            print(f'Расписание сохранено в файл: {filepath}\n')
+            logging.info('Расписание сохранено в файл: %s', filepath)
         except Exception as e:
-            print(f'Ошибка при сохранении расписания в файл: {e}\n')
+            logging.error('Ошибка при сохранении расписания в файл: %s', e, exc_info=True)
 
     @staticmethod
     def load_from_json(filepath: str = 'timetable.json') -> dict:
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 timetable = json.load(f)
-            print(f'Расписание загружено из файла: {filepath}\n')
+            logging.info('Расписание загружено из файла: %s', filepath)
             return timetable
         except Exception as e:
-            print(f'Ошибка при загрузке расписания из файла: {e}\n')
+            logging.error('Ошибка при загрузке расписания из файла: %s', e, exc_info=True)
             return None
 
     @staticmethod
@@ -560,14 +506,14 @@ class BonchAPI:
         
         if not hasattr(self, 'cookies'):
             if not hasattr(self, 'email') or not hasattr(self, 'password'):
-                print("DEBUG: Нет cookies и нет email/password")
+                logging.warning("Нет cookies и нет email/password — не могу получить сообщения")
                 return []
             response = False
             while not response:
                 response = await self.login(self.email, self.password)
         
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(10)) as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(40), trust_env=True, headers=BROWSER_HEADERS, connector=aiohttp.TCPConnector(force_close=True)) as session:
                 # Добавляем заголовки, чтобы имитировать браузер
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -579,10 +525,14 @@ class BonchAPI:
                     'Upgrade-Insecure-Requests': '1'
                 }
                 
-                # Сначала заходим на главную страницу кабинета для инициализации сессии
+                # Сначала заходим на главную страницу кабинета для инициализации сессии.
+                # Шаг необязательный — если не удался, продолжаем (куки уже есть после login).
                 cabinet_url = 'https://lk.sut.ru/cabinet/'
-                async with session.get(cabinet_url, cookies=self.cookies, headers=headers) as cab_response:
-                    cab_response.raise_for_status()
+                try:
+                    async with session.get(cabinet_url, cookies=self.cookies, headers=headers) as cab_response:
+                        cab_response.raise_for_status()
+                except Exception as e:
+                    logging.debug("Инициализация кабинета пропущена: %s", e)
                 
                 # Загружаем первую страницу для определения общего количества страниц
                 first_page_url = f'{BASE_URL}?type=in'
@@ -592,7 +542,7 @@ class BonchAPI:
                     
                     # Если получили ошибку PHP, возвращаем пустой список
                     if 'ERRNO:' in text or 'Undefined index' in text:
-                        print("DEBUG: Обнаружена ошибка PHP на первой странице")
+                        logging.warning("Обнаружена ошибка PHP на первой странице сообщений")
                         return []
                     
                     soup = BeautifulSoup(text, 'html.parser')
@@ -621,113 +571,51 @@ class BonchAPI:
                                 items_per_page = 20
                                 total_pages = (total_items + items_per_page - 1) // items_per_page
                     
-                    print(f"DEBUG: Найдено страниц: {total_pages}")
-                    
-                    # Собираем сообщения со всех страниц
+                    logging.debug("Найдено страниц: %s", total_pages)
+
+                    # Страницы 2..N грузим конкурентно (раньше — последовательно,
+                    # ~35 страниц давали 30-60 сек ожидания). Семафор ограничивает
+                    # число одновременных запросов к ЛК, чтобы не ловить антибот.
+                    page_semaphore = asyncio.Semaphore(5)
+
+                    async def fetch_message_page(page: int):
+                        """Грузит одну страницу сообщений с повтором при сбоях сети/прокси."""
+                        page_url = f'{BASE_URL}?page={page}&type=in'
+                        async with page_semaphore:
+                            for attempt in range(3):
+                                try:
+                                    async with session.get(page_url, cookies=self.cookies, headers=headers) as page_response:
+                                        page_response.raise_for_status()
+                                        return await page_response.text()
+                                except Exception as e:
+                                    if attempt + 1 < 3:
+                                        await asyncio.sleep(1.5 * (attempt + 1))
+                                    else:
+                                        logging.warning("Страница %s не загрузилась после повторов: %s", page, e)
+                        return None
+
+                    # Первую страницу уже загрузили (text); остальные — параллельно.
+                    rest_pages = await asyncio.gather(
+                        *(fetch_message_page(page) for page in range(2, total_pages + 1))
+                    )
+                    page_texts = [text] + list(rest_pages)
+
+                    # Парсим страницы по порядку, чтобы сохранить порядок сообщений.
                     all_messages = []
-                    
-                    for page in range(1, total_pages + 1):
-                        if page == 1:
-                            # Первую страницу уже загрузили
-                            page_text = text
-                        else:
-                            # Загружаем остальные страницы
-                            page_url = f'{BASE_URL}?page={page}&type=in'
-                            async with session.get(page_url, cookies=self.cookies, headers=headers) as page_response:
-                                page_response.raise_for_status()
-                                page_text = await page_response.text()
-                                
-                                if 'ERRNO:' in page_text or 'Undefined index' in page_text:
-                                    print(f"DEBUG: Ошибка на странице {page}, пропускаем")
-                                    continue
-                        
-                        page_soup = BeautifulSoup(page_text, 'html.parser')
-                        
-                        # Ищем таблицу с сообщениями
-                        table = page_soup.find('table', id='mytable')
-                        if not table:
-                            print(f"DEBUG: Таблица не найдена на странице {page}")
+                    for page_number, page_text in enumerate(page_texts, start=1):
+                        if page_text is None:
                             continue
-                        
-                        # Ищем все строки с id начинающимся с "tr_"
-                        rows = table.find_all('tr', id=lambda x: x and x.startswith('tr_'))
-                        print(f"DEBUG: Страница {page}: найдено {len(rows)} сообщений")
-                        
-                        for row in rows:
-                            try:
-                                # Извлекаем ID из id атрибута (tr_3737509 -> 3737509)
-                                row_id = row.get('id', '')
-                                if not row_id.startswith('tr_'):
-                                    continue
-                                
-                                message_id = row_id.replace('tr_', '')
-                                
-                                # Извлекаем данные из ячеек
-                                cells = row.find_all('td')
-                                if len(cells) < 4:
-                                    continue
-                                
-                                # Дата из первой ячейки
-                                date_cell = cells[0]
-                                date_text = date_cell.get_text(strip=True)
-                                
-                                # Тема из второй ячейки (пропускаем изображение)
-                                theme_cell = cells[1]
-                                
-                                # Используем stripped_strings - это дает все текстовые узлы, игнорируя теги
-                                # Это работает даже если текст находится после img тега
-                                text_parts = list(theme_cell.stripped_strings)
-                                
-                                # Фильтруем - убираем пустые строки и текст, который может быть в атрибутах
-                                filtered_parts = []
-                                for part in text_parts:
-                                    part = part.strip()
-                                    # Пропускаем очень короткие строки, которые могут быть артефактами
-                                    if part and len(part) > 1:
-                                        filtered_parts.append(part)
-                                
-                                # Объединяем части
-                                title = ' '.join(filtered_parts).strip() if filtered_parts else ''
-                                
-                                if not title:
-                                    title = 'Без названия'
-                                
-                                # Файлы из третьей ячейки
-                                files_cell = cells[2]
-                                files = []
-                                for file_link in files_cell.find_all('a', href=True):
-                                    file_name = file_link.get_text(strip=True)
-                                    file_url = file_link.get('href', '')
-                                    if file_name:
-                                        files.append({'name': file_name, 'url': file_url})
-                                
-                                # Отправитель из четвертой ячейки
-                                sender_cell = cells[3]
-                                sender = sender_cell.get_text(strip=True) or 'Неизвестно'
-                                
-                                # Проверяем, является ли сообщение непрочитанным (жирный шрифт)
-                                row_style = row.get('style', '')
-                                is_unread = 'font-weight: bold' in row_style or 'font-weight:bold' in row_style.replace(' ', '')
-                                
-                                all_messages.append({
-                                    'id': message_id,
-                                    'title': title,
-                                    'date': date_text,
-                                    'sender': sender,
-                                    'files': files,
-                                    'has_files': len(files) > 0,
-                                    'is_unread': is_unread
-                                })
-                            except Exception as e:
-                                print(f"DEBUG: Ошибка при парсинге строки на странице {page}: {e}")
-                                continue
-                    
-                    print(f"DEBUG: Итого найдено сообщений со всех страниц: {len(all_messages)}")
+                        if 'ERRNO:' in page_text or 'Undefined index' in page_text:
+                            logging.warning("Ошибка на странице %s, пропускаем", page_number)
+                            continue
+                        page_messages = parsers.parse_message_rows(page_text)
+                        logging.debug("Страница %s: найдено %s сообщений", page_number, len(page_messages))
+                        all_messages.extend(page_messages)
+
+                    logging.debug("Итого найдено сообщений со всех страниц: %s", len(all_messages))
                     return all_messages
         except Exception as e:
-            print(f'Ошибка при получении сообщений: {e}')
-            import traceback
-            traceback.print_exc()
+            logging.error('Ошибка при получении сообщений: %s', e, exc_info=True)
             return []
 
     async def get_message(self, message_id: str) -> dict:
@@ -742,7 +630,7 @@ class BonchAPI:
                 response = await self.login(self.email, self.password)
         
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(10)) as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(40), trust_env=True, headers=BROWSER_HEADERS, connector=aiohttp.TCPConnector(force_close=True)) as session:
                 data = {
                     'id': message_id,
                     'prosmotr': ''
@@ -810,7 +698,7 @@ class BonchAPI:
         connector = aiohttp.TCPConnector(limit=limit)
         while True:
             try:
-                async with aiohttp.ClientSession(connector=connector) as session:
+                async with aiohttp.ClientSession(connector=connector, trust_env=True, headers=BROWSER_HEADERS) as session:
                     tasks = [self.crush_request(session, '1', group_id) for group_id, _ in group_items]
                     await asyncio.gather(*tasks)
             except Exception as e:
@@ -926,4 +814,10 @@ async def main():
                 BonchAPI.cls()
 
 if __name__ == '__main__':
+    # При запуске как самостоятельный CLI настраиваем вывод логов в консоль.
+    # При импорте из main.py конфигурацию логирования задаёт main.py.
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+    )
     asyncio.run(main())

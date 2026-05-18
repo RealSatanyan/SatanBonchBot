@@ -1,0 +1,43 @@
+<!-- Синтетическая фикстура: страница raspisanie.php (lk.sut.ru) с активными
+     кнопками «Начать занятие». Воспроизводит структуру реальной страницы:
+     заголовок недели, переключатель недель showweek(...), кнопки open_zan(...). -->
+<html>
+<body>
+<div class="container-fluid">
+  <h3> Расписание занятий на неделю № 15 (18-05-2026 / 24-05-2026) </h3>
+
+  <div class="weeks-switch">
+    <a href="#" onclick="showweek(37)">&nbsp;14</a>
+    <a href="#" onclick="showweek(38)">&nbsp;<b>15</b></a>
+    <a href="#" onclick="showweek(39)">&nbsp;16</a>
+  </div>
+
+  <table class="rasp">
+    <tr>
+      <td>
+        <span id="knop1001"></span>
+        <a href="#" onclick="open_zan(1001, 38)">Начать занятие</a>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <span id="knop1002"></span>
+        <a href="#" onclick="open_zan(1002, 38)">Начать занятие</a>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <!-- дубликат: парсер обязан схлопнуть до одного id 1001 -->
+        <a href="#" onclick="open_zan(1001, 38)">Начать занятие</a>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <!-- update_zan не должен попасть в кандидаты -->
+        <a href="#" onclick="update_zan(9999, 38)">Кнопка появится позже. Обновить.</a>
+      </td>
+    </tr>
+  </table>
+</div>
+</body>
+</html>
