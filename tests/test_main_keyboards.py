@@ -39,6 +39,27 @@ def test_schedule_menu_always_has_group_teacher_room():
     assert {"m:sched:group", "m:sched:teacher", "m:sched:room"} <= set(callbacks)
 
 
+def test_schedule_menu_has_reload_button():
+    callbacks = _callbacks(main.schedule_menu_kb(logged_in=False))
+    assert "m:sched:reload" in callbacks
+
+
+# --- пресеты «Сегодня» / «Завтра» --------------------------------------------
+
+def test_week_navigation_has_today_and_tomorrow_presets():
+    callbacks = _callbacks(main.get_week_navigation_buttons(week_offset=0))
+    assert "my_day_0" in callbacks
+    assert "my_day_1" in callbacks
+
+
+def test_group_navigation_has_today_and_tomorrow_presets():
+    callbacks = _callbacks(main.get_group_week_navigation_buttons("ИКВТ-21", week_number=0))
+    day_presets = [c for c in callbacks if c and c.startswith("group_day_")]
+    assert len(day_presets) == 2
+    assert any(c.endswith("_0") for c in day_presets)
+    assert any(c.endswith("_1") for c in day_presets)
+
+
 # --- autoclick_menu_kb -------------------------------------------------------
 
 def test_autoclick_menu_shows_stop_when_running():

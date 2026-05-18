@@ -66,6 +66,9 @@ docker compose ps                 # статус, в т.ч. healthy/unhealthy
 | `ENCRYPTION_KEY` | да | Ключ Fernet для шифрования паролей в `users.db`. Потеря = пароли не восстановить. |
 | `ALL_PROXY` | нет | Прокси для запросов в ЛК (`lk.sut.ru`, `cabinet.sut.ru`). Telegram ходит напрямую. |
 | `LOG_LEVEL` | нет | Уровень логов (`DEBUG`/`INFO`/`WARNING`/`ERROR`). По умолчанию `INFO`; `DEBUG` — только для отладки. |
+| `TIMETABLE_TTL_HOURS` | нет | TTL кэша расписания групп в часах (по умолчанию `6`). Старше — фоновое обновление при запросе. |
+| `ADMIN_IDS` | нет | Telegram ID админов через запятую — кому слать алерт о поломке парсера ЛК. Пусто — алерты выключены. |
+| `PARSER_ALERT_*` | нет | Окно/порог/cooldown алерта парсера (`WINDOW_MIN=30`, `THRESHOLD=3`, `COOLDOWN_MIN=60`). |
 | `DEBUG_DUMPS`, `DEBUG_DUMPS_KEEP` | нет | HTML-дампы страниц ЛК для отладки парсеров. По умолчанию **выкл**; `DEBUG_DUMPS=1` включает, хранится 30 последних (см. `debug_dumps/`). |
 | `LOGIN_RATE_LIMIT`, `LOGIN_RATE_WINDOW_SEC` | нет | Лимит попыток входа (по умолчанию 5 за 5 минут). |
 | `LK_CONCURRENCY`, `LK_LOGIN_DELAY_SEC`, `LK_LOGIN_JITTER_SEC` | нет | Ограничение частоты запросов в ЛК. |

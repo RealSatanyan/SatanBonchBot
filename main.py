@@ -22,6 +22,7 @@ from PIL import Image, ImageDraw, ImageFont
 import pytz
 import os
 import sys
+import json
 from aiogram.types import BotCommand
 from typing import Optional
 import html
@@ -367,7 +368,7 @@ class DebuggableBonchAPI(BonchAPI):
         """Запасной поиск lesson_id по id='knopXXXX' (см. parsers.extract_lesson_ids_fallback)."""
         return parsers.extract_lesson_ids_fallback(timetable_html)
 
-    async def click_start_lesson(self) -> int:
+    async def click_start_lesson(self, user_id=None) -> int:
         URL = "https://lk.sut.ru/cabinet/project/cabinet/forms/raspisanie.php"
         ERR_MSG = "У Вас нет прав доступа. Или необходимо перезагрузить приложение.."
 
@@ -387,6 +388,12 @@ class DebuggableBonchAPI(BonchAPI):
         # Номер недели — для логов; week_param — для POST (open=1&rasp=...&week=...)
         week_number = self._get_week_safe(timetable)
         week_param = self._get_week_param_safe(timetable)
+
+        # Здоровье парсера: на валидной странице расписания week_param есть всегда
+        # (сессионные/групповые кейсы отсеяны выше). Отсутствие = вёрстка ЛК
+        # изменилась — фиксируем сбой; при всплеске придёт алерт админам.
+        if not week_param:
+            await _note_parser_failure(user_id)
 
         # Самый надежный набор кандидатов: только реальные кнопки "Начать занятие"
         lesson_ids = self._extract_start_lesson_ids(timetable)
@@ -593,6 +600,98 @@ def _write_heartbeat(path: Path) -> None:
         path.touch()
     except Exception:
         logging.warning("Не удалось обновить heartbeat-файл %s", path, exc_info=True)
+
+
+# --- Мониторинг сбоев парсера ЛК ---------------------------------------------
+# Если у lk.sut.ru меняется вёрстка, автоотметка перестаёт извлекать week_param
+# со страницы расписания. Считаем такие сбои по разным пользователям в окне;
+# при всплеске — одно предупреждение админам (ADMIN_IDS), без спама.
+
+def _parse_admin_ids(raw: Optional[str]) -> list:
+    """Парсит ADMIN_IDS из .env: '123, 456' -> [123, 456]. Мусор пропускается."""
+    if not raw:
+        return []
+    ids = []
+    for part in raw.split(","):
+        part = part.strip()
+        if part.lstrip("-").isdigit():
+            ids.append(int(part))
+    return ids
+
+
+class ParserFailureMonitor:
+    """Считает сбои парсера по разным пользователям в скользящем окне.
+    should_alert() даёт True ровно один раз на всплеск — дальше cooldown."""
+
+    def __init__(self, window_minutes: float = 30, threshold_users: int = 3,
+                 cooldown_minutes: float = 60):
+        self.window = timedelta(minutes=window_minutes)
+        self.threshold_users = threshold_users
+        self.cooldown = timedelta(minutes=cooldown_minutes)
+        self._events: list = []          # [(user_key, datetime)]
+        self._last_alert: Optional[datetime] = None
+
+    def _prune(self, now: datetime) -> None:
+        self._events = [(u, t) for (u, t) in self._events if now - t <= self.window]
+
+    def record_failure(self, user_key, now: datetime) -> None:
+        self._events.append((user_key, now))
+        self._prune(now)
+
+    def distinct_users(self, now: datetime) -> int:
+        self._prune(now)
+        return len({u for (u, _t) in self._events})
+
+    def should_alert(self, now: datetime) -> bool:
+        if self.distinct_users(now) < self.threshold_users:
+            return False
+        if self._last_alert is not None and now - self._last_alert < self.cooldown:
+            return False
+        self._last_alert = now
+        return True
+
+
+ADMIN_IDS = _parse_admin_ids(os.getenv("ADMIN_IDS"))
+try:
+    _parser_failure_monitor = ParserFailureMonitor(
+        window_minutes=float(os.getenv("PARSER_ALERT_WINDOW_MIN", "30")),
+        threshold_users=int(os.getenv("PARSER_ALERT_THRESHOLD", "3")),
+        cooldown_minutes=float(os.getenv("PARSER_ALERT_COOLDOWN_MIN", "60")),
+    )
+except ValueError:
+    logging.warning("Некорректные PARSER_ALERT_* в .env — беру значения по умолчанию")
+    _parser_failure_monitor = ParserFailureMonitor()
+
+
+async def _alert_admins_parser_broken(distinct_users: int, window_minutes: float) -> None:
+    """Одно предупреждение админам о вероятной поломке парсера ЛК."""
+    if not ADMIN_IDS:
+        logging.warning("Всплеск сбоёв парсера, но ADMIN_IDS не задан — алерт не отправлен")
+        return
+    text = (
+        "⚠️ <b>Похоже, сломался парсер ЛК.</b>\n\n"
+        f"За последние {int(window_minutes)} мин у {distinct_users} пользователей "
+        "автоотметка не смогла разобрать страницу расписания "
+        "(не извлекается <code>week_param</code>).\n\n"
+        "Вероятно, изменилась вёрстка lk.sut.ru. Включи <code>DEBUG_DUMPS=1</code> "
+        "и посмотри HTML в <code>debug_dumps/</code>."
+    )
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, text, parse_mode="HTML")
+        except Exception:
+            logging.warning("Не удалось отправить алерт админу %s", admin_id, exc_info=True)
+
+
+async def _note_parser_failure(user_id) -> None:
+    """Регистрирует сбой парсера; при всплеске шлёт одно предупреждение админам."""
+    now = datetime.now(pytz.timezone("Europe/Moscow"))
+    _parser_failure_monitor.record_failure(user_id if user_id is not None else "unknown", now)
+    if _parser_failure_monitor.should_alert(now):
+        distinct = _parser_failure_monitor.distinct_users(now)
+        window_min = _parser_failure_monitor.window.total_seconds() / 60
+        logging.warning("Всплеск сбоёв парсера ЛК: %s пользователей — шлю алерт админам", distinct)
+        await _alert_admins_parser_broken(distinct, window_min)
 # Экземпляр BonchAPI для работы с расписанием без авторизации (преподаватели, кабинеты)
 timetable_api = None  # Будет инициализирован при первом использовании
 all_groups_timetable_cache = None  # Кэш расписания всех групп
@@ -841,7 +940,7 @@ class LessonController:
 
                     # Пытаемся выполнить клик
                     logging.debug("Попытка кликнуть занятие для пользователя %s", self.user_id)
-                    clicked = await self.api.click_start_lesson()
+                    clicked = await self.api.click_start_lesson(self.user_id)
                     if clicked > 0:
                         logging.info("Клик выполнен. Отправлено запросов: %s", clicked)
                         # Оповещение в TG: ровно одно сообщение на одну пару
@@ -1169,14 +1268,46 @@ async def cmd_my_account(message: types.Message):
     
     await message.answer("\n".join(status_parts))
 
-def format_timetable(timetable) -> str:
+# --- Пресеты расписания «Сегодня» / «Завтра» ---------------------------------
+
+def filter_group_lessons_by_date(timetable, date_str: str) -> list:
+    """Занятия группы (дикт-формат) на дату вида '2026.05.18' (поле 'Число')."""
+    if not isinstance(timetable, list):
+        return []
+    return [l for l in timetable if isinstance(l, dict) and l.get("Число") == date_str]
+
+
+def filter_personal_lessons_by_date(timetable, date_str: str) -> list:
+    """Занятия личного расписания (объекты ЛК) на дату вида '2026-05-18'."""
+    if not timetable:
+        return []
+    return [l for l in timetable if getattr(l, "date", None) == date_str]
+
+
+def _week_offset_for_date(target, today) -> int:
+    """week_offset недели target относительно недели today (оба — date)."""
+    today_monday = today - timedelta(days=today.weekday())
+    target_monday = target - timedelta(days=target.weekday())
+    return (target_monday - today_monday).days // 7
+
+
+def _moscow_today():
+    """Текущая дата по московскому времени."""
+    return datetime.now(pytz.timezone("Europe/Moscow")).date()
+
+
+def format_timetable(timetable, title: str = "Ваше расписание") -> str:
     """
     Форматирует список занятий в читаемый текст.
     :param timetable: Список занятий.
+    :param title: Заголовок расписания.
     :return: Отформатированная строка с расписанием.
     """
-    formatted_timetable = "📅 Ваше расписание:\n\n"
-    
+    if not timetable:
+        return f"📅 {title}\n\nЗанятий не найдено 🎉"
+
+    formatted_timetable = f"📅 {title}:\n\n"
+
     # Группируем занятия по дням
     days = {}
     for lesson in timetable:
@@ -2076,6 +2207,10 @@ def get_week_navigation_buttons(week_offset: int = 0) -> InlineKeyboardMarkup:
     """
     buttons = [
         [
+            InlineKeyboardButton(text="📍 Сегодня", callback_data="my_day_0"),
+            InlineKeyboardButton(text="Завтра 📍", callback_data="my_day_1"),
+        ],
+        [
             InlineKeyboardButton(text="⬅️ Предыдущая неделя", callback_data=f"prev_week_{week_offset - 1}"),
             InlineKeyboardButton(text="Следующая неделя ➡️", callback_data=f"next_week_{week_offset + 1}"),
         ],
@@ -2153,6 +2288,10 @@ def get_group_week_navigation_buttons(group_name: str, week_number: int = None) 
     encoded_name = base64.b64encode(group_name.encode('utf-8')).decode('utf-8')
     
     buttons = [
+        [
+            InlineKeyboardButton(text="📍 Сегодня", callback_data=f"group_day_{encoded_name}_0"),
+            InlineKeyboardButton(text="Завтра 📍", callback_data=f"group_day_{encoded_name}_1"),
+        ],
         [
             InlineKeyboardButton(text="⬅️ Предыдущая неделя", callback_data=f"prev_group_week_{encoded_name}_{week_number - 1}"),
             InlineKeyboardButton(text="Следующая неделя ➡️", callback_data=f"next_group_week_{encoded_name}_{week_number + 1}"),
@@ -2371,6 +2510,47 @@ async def process_group_week_navigation(callback_query: CallbackQuery):
         logging.error(f"Ошибка при переключении недели группы: {e}", exc_info=True)
         await callback_query.answer("⚠️ Не удалось выполнить действие. Попробуй позже.", show_alert=True)
 
+@dp.callback_query(F.data.startswith("group_day_"))
+async def process_group_day(callback_query: CallbackQuery):
+    """Пресет «Сегодня» / «Завтра» для расписания группы (offset 0 / 1)."""
+    try:
+        import base64
+        rest = callback_query.data[len("group_day_"):]
+        encoded_name, offset_str = rest.rsplit("_", 1)
+        offset = int(offset_str)
+        group_name = base64.b64decode(encoded_name.encode('utf-8')).decode('utf-8')
+
+        global all_groups_timetable_cache
+        if all_groups_timetable_cache is None or group_name not in all_groups_timetable_cache:
+            await callback_query.answer("Расписание группы недоступно.", show_alert=True)
+            return
+
+        timetable = all_groups_timetable_cache[group_name]
+        if not timetable or isinstance(timetable, str):
+            await callback_query.answer(f"Расписание для группы '{group_name}' недоступно", show_alert=True)
+            return
+
+        target = _moscow_today() + timedelta(days=offset)
+        day_lessons = filter_group_lessons_by_date(timetable, target.strftime("%Y.%m.%d"))
+        label = "Сегодня" if offset == 0 else "Завтра"
+        title = f"Группа {group_name} — {label} ({target.strftime('%d.%m')})"
+
+        if not day_lessons:
+            text = f"📅 {title}\n\nЗанятий не найдено 🎉"
+        else:
+            text = format_timetable_dict(day_lessons, title)
+            if len(text) > 4000:
+                text = text[:4000] + "\n\n... (сообщение обрезано)"
+
+        await callback_query.message.edit_text(
+            text, parse_mode="Markdown",
+            reply_markup=get_group_week_navigation_buttons(group_name, 0),
+        )
+        await callback_query.answer()
+    except Exception as e:
+        logging.error(f"Ошибка пресета расписания группы: {e}", exc_info=True)
+        await callback_query.answer("⚠️ Не удалось показать расписание. Попробуй позже.", show_alert=True)
+
 @dp.callback_query(F.data.startswith("prev_week_") | F.data.startswith("next_week_") | F.data.startswith("current_week_"))
 async def process_week_navigation(callback_query: CallbackQuery):
     # Извлекаем смещение недели из callback_data
@@ -2406,6 +2586,34 @@ async def process_week_navigation(callback_query: CallbackQuery):
     except Exception as e:
         logging.error("Ошибка при переключении недели расписания: %s", e, exc_info=True)
         await callback_query.answer("⚠️ Не удалось переключить неделю. Попробуй позже.", show_alert=True)
+
+@dp.callback_query(F.data.startswith("my_day_"))
+async def process_my_day(callback_query: CallbackQuery):
+    """Пресет «Сегодня» / «Завтра» для личного расписания (offset 0 / 1)."""
+    user_id = callback_query.from_user.id
+    if user_id not in apis:
+        await callback_query.answer("Сначала авторизуйтесь с помощью /login.", show_alert=True)
+        return
+    try:
+        offset = int(callback_query.data.split("_")[2])
+        today = _moscow_today()
+        target = today + timedelta(days=offset)
+        week_offset = _week_offset_for_date(target, today)
+
+        timetable = await apis[user_id].get_timetable(week_offset=week_offset)
+        day_lessons = filter_personal_lessons_by_date(timetable, target.strftime("%Y-%m-%d"))
+        label = "Сегодня" if offset == 0 else "Завтра"
+        title = f"{label} ({target.strftime('%d.%m')})"
+
+        await callback_query.message.edit_text(
+            format_timetable(day_lessons, title=title),
+            parse_mode="Markdown",
+            reply_markup=get_week_navigation_buttons(week_offset=0),
+        )
+        await callback_query.answer()
+    except Exception as e:
+        logging.error("Ошибка пресета личного расписания: %s", e, exc_info=True)
+        await callback_query.answer("⚠️ Не удалось показать расписание. Попробуй позже.", show_alert=True)
 
 @dp.message(Command("timetable"))
 async def cmd_timetable(message: types.Message, uid: int = None):
@@ -2578,6 +2786,82 @@ async def progress_updater():
                 except Exception as e:
                     logging.error(f"Ошибка при отправке прогресса пользователю {user_id}: {e}")
 
+# --- TTL-кэш расписания групп ------------------------------------------------
+# timetable.json (~58 МБ) формат не трогаем — метаданные пишем в sidecar-файл.
+# Если кэш старше TTL, при запросе группы он обновляется в фоне, а пользователю
+# сразу отдаются текущие (пусть и слегка устаревшие) данные.
+TIMETABLE_META_FILE = Path("timetable.meta.json")
+try:
+    TIMETABLE_TTL_HOURS = float(os.getenv("TIMETABLE_TTL_HOURS", "6"))
+except ValueError:
+    TIMETABLE_TTL_HOURS = 6.0
+
+
+def _write_timetable_meta(fetched_at: datetime, path: Path = TIMETABLE_META_FILE) -> None:
+    """Записывает метку времени загрузки расписания в sidecar-файл."""
+    try:
+        path.write_text(
+            json.dumps({"fetched_at": fetched_at.isoformat()}),
+            encoding="utf-8",
+        )
+    except Exception:
+        logging.warning("Не удалось записать %s", path, exc_info=True)
+
+
+def _read_timetable_meta(path: Path = TIMETABLE_META_FILE) -> Optional[dict]:
+    """Читает sidecar с метаданными расписания. None — нет файла / битый."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _timetable_age_seconds(meta: Optional[dict], now: datetime) -> Optional[float]:
+    """Возраст кэша расписания в секундах. None — нет валидной метки."""
+    if not meta or "fetched_at" not in meta:
+        return None
+    try:
+        fetched_at = datetime.fromisoformat(meta["fetched_at"])
+        return (now - fetched_at).total_seconds()
+    except (ValueError, TypeError):
+        return None
+
+
+def _is_timetable_stale(age_seconds: Optional[float], ttl_hours: float) -> bool:
+    """Кэш устарел? Отсутствие метки (None) считаем устаревшим."""
+    if age_seconds is None:
+        return True
+    return age_seconds > ttl_hours * 3600
+
+
+def _format_cache_age(age_seconds: Optional[float]) -> str:
+    """Человекочитаемый возраст кэша: «5 мин назад», «3 ч назад»."""
+    if age_seconds is None:
+        return "время неизвестно"
+    if age_seconds < 60:
+        return "только что"
+    minutes = int(age_seconds // 60)
+    if minutes < 60:
+        return f"{minutes} мин назад"
+    hours = int(age_seconds // 3600)
+    return f"{hours} ч назад"
+
+
+def _timetable_cache_age_now() -> Optional[float]:
+    """Возраст кэша расписания на текущий момент (по московскому времени)."""
+    now = datetime.now(pytz.timezone("Europe/Moscow"))
+    return _timetable_age_seconds(_read_timetable_meta(), now)
+
+
+async def _refresh_timetable_quietly() -> None:
+    """Фоновое обновление расписания групп без прогресс-сообщений."""
+    try:
+        await get_all_groups_timetable(force_reload=True)
+        logging.info("Фоновое обновление расписания групп завершено")
+    except Exception:
+        logging.warning("Фоновое обновление расписания не удалось", exc_info=True)
+
+
 async def get_all_groups_timetable(force_reload: bool = False, user_id: int = None, progress_message=None):
     """
     Получает расписание всех групп с кэшированием и отслеживанием прогресса.
@@ -2626,7 +2910,9 @@ async def get_all_groups_timetable(force_reload: bool = False, user_id: int = No
             
             all_groups_timetable_cache = await all_groups_timetable_with_progress(api)
             logging.info(f"Расписание всех групп загружено: {len(all_groups_timetable_cache)} групп")
-            # Сохранение в JSON уже выполняется в all_groups_timetable_with_progress
+            # Сохранение в JSON уже выполняется в all_groups_timetable_with_progress.
+            # Метку времени пишем в sidecar — для TTL и текста «обновлено N назад».
+            _write_timetable_meta(datetime.now(pytz.timezone("Europe/Moscow")))
             
             # Отправляем финальное сообщение всем пользователям
             for user_id in list(timetable_progress_users.keys()):
@@ -2658,7 +2944,18 @@ async def get_all_groups_timetable(force_reload: bool = False, user_id: int = No
             # Очищаем список пользователей
             timetable_progress_users.clear()
             timetable_progress = {'current': 0, 'total': 0, 'start_time': None}
-    
+
+    # TTL: если кэш в памяти устарел и фоновая загрузка не идёт — обновляем в
+    # фоне; пользователю сразу отдаём текущие (возможно устаревшие) данные.
+    if (
+        all_groups_timetable_cache is not None
+        and not force_reload
+        and not timetable_loading
+        and _is_timetable_stale(_timetable_cache_age_now(), TIMETABLE_TTL_HOURS)
+    ):
+        logging.info("Кэш расписания устарел — запускаю фоновое обновление")
+        asyncio.create_task(_refresh_timetable_quietly())
+
     return all_groups_timetable_cache
 
 @dp.message(Command("teacher_timetable"))
@@ -3857,6 +4154,7 @@ def schedule_menu_kb(logged_in: bool) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text="👥 Группа", callback_data="m:sched:group")])
     rows.append([InlineKeyboardButton(text="🧑‍🏫 Преподаватель", callback_data="m:sched:teacher")])
     rows.append([InlineKeyboardButton(text="🚪 Аудитория", callback_data="m:sched:room")])
+    rows.append([InlineKeyboardButton(text="🔄 Обновить расписание групп", callback_data="m:sched:reload")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -4026,8 +4324,9 @@ async def send_autoclick_panel(user_id: int, chat_id: int):
 @dp.message(F.text == BTN_SCHEDULE)
 async def menu_schedule(message: types.Message, state: FSMContext):
     await state.clear()
+    age = _format_cache_age(_timetable_cache_age_now())
     await message.answer(
-        "📅 Чьё расписание показать?",
+        f"📅 Чьё расписание показать?\n\n🗂 Расписание групп обновлено: {age}",
         reply_markup=schedule_menu_kb(is_registered(message.from_user.id)),
     )
 
@@ -4221,6 +4520,30 @@ async def cb_sched_room(callback_query: CallbackQuery, state: FSMContext):
         "🚪 Введи номер аудитории (например: 401):",
         reply_markup=cancel_kb(),
     )
+
+
+@dp.callback_query(F.data == "m:sched:reload")
+async def cb_sched_reload(callback_query: CallbackQuery, state: FSMContext):
+    await state.clear()
+    user_id = callback_query.from_user.id
+    await callback_query.answer("Обновляю расписание...")
+    logging.info(f"Пользователь {user_id} запросил обновление расписания групп (меню)")
+    status_msg = await callback_query.message.answer(
+        "⏳ Обновляю расписание всех групп… Это может занять некоторое время."
+    )
+    try:
+        all_timetable = await get_all_groups_timetable(
+            force_reload=True, user_id=user_id, progress_message=status_msg
+        )
+        await status_msg.edit_text(
+            f"✅ Расписание обновлено! Загружено {len(all_timetable)} групп."
+        )
+    except Exception as e:
+        logging.error(f"Ошибка обновления расписания (меню) для {user_id}: {e}", exc_info=True)
+        try:
+            await status_msg.edit_text("❌ Не удалось обновить расписание. Попробуй позже.")
+        except Exception:
+            await callback_query.message.answer("❌ Не удалось обновить расписание. Попробуй позже.")
 
 
 @dp.message(UIStates.ask_group)

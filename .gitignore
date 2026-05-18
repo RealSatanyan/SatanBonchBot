@@ -9,10 +9,12 @@ users.db-journal
 users.db.bak*
 
 # --- Генерируемые в рантайме артефакты ---
-# timetable.json — кэш расписания всех групп
-# timetable.png  — отрисованная картинка расписания
-# debug_dumps/   — HTML-дампы страниц ЛК для отладки парсеров
+# timetable.json      — кэш расписания всех групп
+# timetable.meta.json — метка времени загрузки кэша (TTL)
+# timetable.png       — отрисованная картинка расписания
+# debug_dumps/        — HTML-дампы страниц ЛК для отладки парсеров
 timetable.json
+timetable.meta.json
 timetable.png
 debug_dumps/
 
