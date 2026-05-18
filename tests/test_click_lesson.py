@@ -10,6 +10,7 @@ from datetime import datetime
 
 import pytest
 
+import lk_client
 import main
 
 
@@ -51,13 +52,13 @@ class _FakeSession:
 
 
 def _patch_network(monkeypatch, session_cls=_FakeSession):
-    monkeypatch.setattr(main.aiohttp, "ClientSession", session_cls)
-    monkeypatch.setattr(main.aiohttp, "TCPConnector", lambda **kw: object())
+    monkeypatch.setattr(lk_client.aiohttp, "ClientSession", session_cls)
+    monkeypatch.setattr(lk_client.aiohttp, "TCPConnector", lambda **kw: object())
 
 
 def _api_with_timetable(html):
     """DebuggableBonchAPI с подменённым get_raw_timetable (без сети)."""
-    api = main.DebuggableBonchAPI()
+    api = lk_client.DebuggableBonchAPI()
 
     async def _fake_raw(*args, **kwargs):
         return html
