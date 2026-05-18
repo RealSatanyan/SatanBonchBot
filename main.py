@@ -146,6 +146,23 @@ from lk_client import _prune_debug_dumps
 import lesson_controller
 from lesson_controller import LessonController
 
+# Сервис загрузки расписания всех групп извлечён в timetable_service.py
+# (задача 4.1, шаг 12b). main.py остаётся фасадом — реэкспортит публичные
+# функции сервиса. Внутреннее изменяемое состояние сервиса
+# (all_groups_timetable_cache, timetable_loading, timetable_progress,
+# timetable_progress_users) НЕ реэкспортируется именами — main.py обращается
+# к нему как timetable_service.<имя> (модуль-квалифицированный доступ), т.к.
+# эти переменные переприсваиваются на уровне модуля сервиса.
+import timetable_service
+from timetable_service import (
+    all_groups_timetable_with_progress,
+    send_progress_update,
+    progress_updater,
+    get_all_groups_timetable,
+    _refresh_timetable_quietly,
+    preload_timetable,
+)
+
 
 # Шифрование паролей (ENCRYPTION_KEY, _fernet, encrypt_password,
 # decrypt_password) извлечено в security.py — реэкспортируется выше.
@@ -170,10 +187,10 @@ _background_tasks: list = []
 # _alert_admins_parser_broken, _note_parser_failure) извлечён в monitoring.py
 # (задача 4.1, шаг 6). Доступен через реэкспорт выше.
 
-all_groups_timetable_cache = None  # Кэш расписания всех групп
-timetable_loading = False  # Флаг загрузки расписания
-timetable_progress_users = {}  # Словарь {user_id: message} для отправки прогресса
-timetable_progress = {'current': 0, 'total': 0, 'start_time': None}  # Прогресс загрузки
+# Внутреннее изменяемое состояние сервиса загрузки расписания
+# (all_groups_timetable_cache, timetable_loading, timetable_progress,
+# timetable_progress_users) извлечено в timetable_service.py (задача 4.1,
+# шаг 12b). Доступ — через timetable_service.<имя> (модуль-квалифицированно).
 # Состояния навигации по сообщениям
 message_states = {}  # Словарь {user_id: {'messages': [], 'current_index': 0}} для навигации по сообщениям
 # Тёплый кэш списка сообщений: повторный заход в /messages в пределах TTL
@@ -518,13 +535,12 @@ async def process_teacher_week_navigation(callback_query: CallbackQuery):
             return
         
         # Получаем расписание всех групп
-        global all_groups_timetable_cache
-        if all_groups_timetable_cache is None:
+        if timetable_service.all_groups_timetable_cache is None:
             await callback_query.answer("Расписание еще не загружено. Используйте команду /teacher_timetable", show_alert=True)
             return
-        
+
         # Фильтруем по преподавателю
-        teacher_timetable = TimetableBonchAPI.teacher_timetable(all_groups_timetable_cache, teacher_name)
+        teacher_timetable = TimetableBonchAPI.teacher_timetable(timetable_service.all_groups_timetable_cache, teacher_name)
         
         if not teacher_timetable:
             await callback_query.answer(f"Не найдено занятий для преподавателя: {teacher_name}", show_alert=True)
@@ -573,13 +589,12 @@ async def process_classroom_week_navigation(callback_query: CallbackQuery):
             return
         
         # Получаем расписание всех групп
-        global all_groups_timetable_cache
-        if all_groups_timetable_cache is None:
+        if timetable_service.all_groups_timetable_cache is None:
             await callback_query.answer("Расписание еще не загружено. Используйте команду /classroom_timetable", show_alert=True)
             return
-        
+
         # Фильтруем по кабинету
-        classroom_timetable = TimetableBonchAPI.classroom_timetable(all_groups_timetable_cache, classroom_number)
+        classroom_timetable = TimetableBonchAPI.classroom_timetable(timetable_service.all_groups_timetable_cache, classroom_number)
         
         if not classroom_timetable:
             await callback_query.answer(f"Не найдено занятий для кабинета: {classroom_number}", show_alert=True)
@@ -629,17 +644,16 @@ async def process_group_week_navigation(callback_query: CallbackQuery):
             return
         
         # Получаем расписание всех групп
-        global all_groups_timetable_cache
-        if all_groups_timetable_cache is None:
+        if timetable_service.all_groups_timetable_cache is None:
             await callback_query.answer("Расписание еще не загружено. Используйте команду /group_timetable", show_alert=True)
             return
-        
+
         # Получаем расписание группы
-        if group_name not in all_groups_timetable_cache:
+        if group_name not in timetable_service.all_groups_timetable_cache:
             await callback_query.answer(f"Группа '{group_name}' не найдена в расписании", show_alert=True)
             return
-        
-        timetable = all_groups_timetable_cache[group_name]
+
+        timetable = timetable_service.all_groups_timetable_cache[group_name]
         
         if not timetable or isinstance(timetable, str):
             await callback_query.answer(f"Расписание для группы '{group_name}' недоступно", show_alert=True)
@@ -707,12 +721,11 @@ async def process_group_day(callback_query: CallbackQuery):
         offset = int(offset_str)
         group_name = base64.b64decode(encoded_name.encode('utf-8')).decode('utf-8')
 
-        global all_groups_timetable_cache
-        if all_groups_timetable_cache is None or group_name not in all_groups_timetable_cache:
+        if timetable_service.all_groups_timetable_cache is None or group_name not in timetable_service.all_groups_timetable_cache:
             await callback_query.answer("Расписание группы недоступно.", show_alert=True)
             return
 
-        timetable = all_groups_timetable_cache[group_name]
+        timetable = timetable_service.all_groups_timetable_cache[group_name]
         if not timetable or isinstance(timetable, str):
             await callback_query.answer(f"Расписание для группы '{group_name}' недоступно", show_alert=True)
             return
@@ -831,242 +844,10 @@ async def cmd_timetable(message: types.Message, uid: int = None):
 # get_timetable_api (вместе с синглтоном timetable_api) извлечён в lk_client.py
 # (задача 4.1, шаг 10) — реэкспортируется выше.
 
-async def all_groups_timetable_with_progress(api):
-    """
-    Загружает расписание всех групп с отслеживанием прогресса.
-    Использует оригинальный метод API, но отслеживает прогресс через глобальную переменную.
-    """
-    from datetime import datetime
-    import aiohttp
-    from tqdm.asyncio import tqdm_asyncio
-    
-    start = datetime.now()
-    
-    await api.get_schet()
-    await api.get_groups()
-    
-    timetable = {}
-    group_items = list(api.groups_id.items())
-    total_groups = len(group_items)
-    
-    # Инициализируем прогресс
-    global timetable_progress
-    timetable_progress['total'] = total_groups
-    timetable_progress['current'] = 0
-    timetable_progress['start_time'] = start
-    
-    connector = aiohttp.TCPConnector(limit=api.limit)
-    async with aiohttp.ClientSession(connector=connector, trust_env=True, headers=BROWSER_HEADERS) as session:
-        completed = 0
-        async def track_progress(coro):
-            nonlocal completed
-            result = await coro
-            completed += 1
-            timetable_progress['current'] = min(completed, total_groups)
-            return result
-
-        # cabinet.sut.ru нестабилен под нагрузкой: за один проход часть групп
-        # отдаётся с ошибкой. Делаем несколько проходов, дозабирая только неудачные.
-        pending = list(group_items)
-        for pass_num in range(3):
-            if not pending:
-                break
-            tracked_tasks = [track_progress(api.get_timetable(session, '1', group_id))
-                             for group_id, _ in pending]
-            results = await tqdm_asyncio.gather(*tracked_tasks,
-                desc=f'Загрузка групп (проход {pass_num + 1})', unit=' Групп',
-                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} | {rate_fmt}{postfix}')
-
-            still_failed = []
-            for (group_id, group_name), result in zip(pending, results):
-                if isinstance(result, str):
-                    still_failed.append((group_id, group_name))
-                else:
-                    timetable[group_name] = result
-            pending = still_failed
-
-            if pending and pass_num < 2:
-                logging.info('Проход %s завершён, не удалось %s групп — повтор через 20с',
-                             pass_num + 1, len(pending))
-                await asyncio.sleep(20)
-
-        if pending:
-            logging.warning('После всех проходов не загрузилось групп: %s', len(pending))
-    
-    # Сохраняем в JSON (как в оригинальном методе)
-    TimetableBonchAPI.save_to_json(timetable, 'timetable.json')
-    
-    end = datetime.now()
-    logging.info(f'Всего групп получено: {len(timetable)}')
-    logging.info(f'Потрачено времени: {(end - start).total_seconds()} секунд')
-    
-    return timetable
-
-async def send_progress_update(user_id: int, current: int, total: int, start_time):
-    """
-    Отправляет обновление прогресса пользователю.
-    """
-    global timetable_progress_users
-    if user_id not in timetable_progress_users:
-        return
-    
-    from datetime import datetime
-    elapsed = (datetime.now() - start_time).total_seconds()
-    percent = (current / total * 100) if total > 0 else 0
-    rate = current / elapsed if elapsed > 0 else 0
-    remaining = (total - current) / rate if rate > 0 else 0
-    
-    progress_bar_length = 20
-    filled = int(progress_bar_length * current / total) if total > 0 else 0
-    bar = '█' * filled + '░' * (progress_bar_length - filled)
-    
-    message_text = (
-        f"📥 Загрузка расписания...\n\n"
-        f"Прогресс: {bar}\n"
-        f"{current}/{total} групп ({percent:.1f}%)\n"
-        f"Скорость: {rate:.1f} групп/сек\n"
-        f"Осталось: ~{remaining:.0f} сек"
-    )
-    
-    try:
-        msg = timetable_progress_users[user_id]
-        await msg.edit_text(message_text)
-    except Exception as e:
-        logging.error(f"Ошибка при отправке прогресса пользователю {user_id}: {e}")
-
-async def progress_updater():
-    """
-    Фоновая задача для отправки обновлений прогресса каждые 10 секунд.
-    """
-    global timetable_progress, timetable_progress_users, timetable_loading
-    
-    while timetable_loading:
-        await asyncio.sleep(10)  # Обновляем каждые 10 секунд
-        
-        if not timetable_loading:
-            break
-        
-        current = timetable_progress.get('current', 0)
-        total = timetable_progress.get('total', 0)
-        start_time = timetable_progress.get('start_time')
-        
-        if start_time and total > 0 and timetable_progress_users:
-            # Отправляем обновления всем пользователям, которые ждут
-            for user_id in list(timetable_progress_users.keys()):
-                try:
-                    await send_progress_update(user_id, current, total, start_time)
-                except Exception as e:
-                    logging.error(f"Ошибка при отправке прогресса пользователю {user_id}: {e}")
-
-# --- TTL-кэш расписания групп ------------------------------------------------
-# TTL-хелперы вынесены в timetable_cache.py (задача 4.1, шаг 7), доступны здесь
-# через реэкспорт. Сервис загрузки расписания остаётся в main.py.
-
-
-async def _refresh_timetable_quietly() -> None:
-    """Фоновое обновление расписания групп без прогресс-сообщений."""
-    try:
-        await get_all_groups_timetable(force_reload=True)
-        logging.info("Фоновое обновление расписания групп завершено")
-    except Exception:
-        logging.warning("Фоновое обновление расписания не удалось", exc_info=True)
-
-
-async def get_all_groups_timetable(force_reload: bool = False, user_id: int = None, progress_message=None):
-    """
-    Получает расписание всех групп с кэшированием и отслеживанием прогресса.
-    Сначала пытается загрузить из JSON файла, если он существует и не требуется принудительная перезагрузка.
-    """
-    global all_groups_timetable_cache, timetable_loading, timetable_progress_users
-    
-    if all_groups_timetable_cache is None or force_reload:
-        # Если не требуется принудительная перезагрузка, пытаемся загрузить из JSON
-        if not force_reload:
-            try:
-                timetable_from_json = TimetableBonchAPI.load_from_json('timetable.json')
-                if timetable_from_json:
-                    all_groups_timetable_cache = timetable_from_json
-                    logging.info(f"Расписание загружено из JSON файла: {len(all_groups_timetable_cache)} групп")
-                    return all_groups_timetable_cache
-            except Exception as e:
-                logging.warning(f"Не удалось загрузить расписание из JSON: {e}. Загружаю с сервера...")
-        
-        if timetable_loading:
-            # Если уже идет загрузка, добавляем пользователя в список ожидающих
-            if user_id and progress_message:
-                timetable_progress_users[user_id] = progress_message
-            # Ждем завершения загрузки
-            while timetable_loading:
-                await asyncio.sleep(1)
-            # Удаляем пользователя из списка после завершения
-            if user_id and user_id in timetable_progress_users:
-                del timetable_progress_users[user_id]
-            return all_groups_timetable_cache
-        
-        timetable_loading = True
-        
-        # Добавляем пользователя в список для получения прогресса
-        if user_id and progress_message:
-            timetable_progress_users[user_id] = progress_message
-        
-        # Запускаем задачу для отправки прогресса
-        progress_task = None
-        if timetable_progress_users:
-            progress_task = asyncio.create_task(progress_updater())
-        
-        try:
-            api = await get_timetable_api()
-            logging.info("Загрузка расписания всех групп с сервера...")
-            
-            all_groups_timetable_cache = await all_groups_timetable_with_progress(api)
-            logging.info(f"Расписание всех групп загружено: {len(all_groups_timetable_cache)} групп")
-            # Сохранение в JSON уже выполняется в all_groups_timetable_with_progress.
-            # Метку времени пишем в sidecar — для TTL и текста «обновлено N назад».
-            _write_timetable_meta(datetime.now(pytz.timezone("Europe/Moscow")))
-            
-            # Отправляем финальное сообщение всем пользователям
-            for user_id in list(timetable_progress_users.keys()):
-                try:
-                    msg = timetable_progress_users[user_id]
-                    await msg.edit_text(f"✅ Расписание успешно загружено! Загружено {len(all_groups_timetable_cache)} групп.")
-                except Exception as e:
-                    logging.error(f"Ошибка при отправке финального сообщения пользователю {user_id}: {e}")
-            
-        except Exception as e:
-            logging.error(f"Ошибка при загрузке расписания: {e}", exc_info=True)
-            # Отправляем сообщение об ошибке всем пользователям
-            for user_id in list(timetable_progress_users.keys()):
-                try:
-                    msg = timetable_progress_users[user_id]
-                    await msg.edit_text("❌ Не удалось загрузить расписание. Попробуй позже.")
-                except Exception as err:
-                    logging.error(f"Ошибка при отправке сообщения об ошибке пользователю {user_id}: {err}")
-            raise
-        finally:
-            timetable_loading = False
-            # Останавливаем задачу прогресса
-            if progress_task:
-                progress_task.cancel()
-                try:
-                    await progress_task
-                except asyncio.CancelledError:
-                    pass
-            # Очищаем список пользователей
-            timetable_progress_users.clear()
-            timetable_progress = {'current': 0, 'total': 0, 'start_time': None}
-
-    # TTL: если кэш в памяти устарел и фоновая загрузка не идёт — обновляем в
-    # фоне; пользователю сразу отдаём текущие (возможно устаревшие) данные.
-    if (
-        all_groups_timetable_cache is not None
-        and not force_reload
-        and not timetable_loading
-        and _is_timetable_stale(_timetable_cache_age_now(), TIMETABLE_TTL_HOURS)
-    ):
-        logging.info("Кэш расписания устарел — запускаю фоновое обновление")
-        asyncio.create_task(_refresh_timetable_quietly())
-
-    return all_groups_timetable_cache
+# Сервис загрузки расписания всех групп (all_groups_timetable_with_progress,
+# send_progress_update, progress_updater, _refresh_timetable_quietly,
+# get_all_groups_timetable) извлечён в timetable_service.py (задача 4.1,
+# шаг 12b) — реэкспортируется выше.
 
 @dp.message(Command("teacher_timetable"))
 async def cmd_teacher_timetable(message: types.Message, override: str = None):
@@ -1090,17 +871,16 @@ async def cmd_teacher_timetable(message: types.Message, override: str = None):
     
     try:
         # Проверяем наличие кэша
-        global all_groups_timetable_cache, timetable_loading
         status_msg = None
-        if all_groups_timetable_cache is None:
-            if timetable_loading:
+        if timetable_service.all_groups_timetable_cache is None:
+            if timetable_service.timetable_loading:
                 status_msg = await message.answer("⏳ Расписание уже загружается, пожалуйста подождите...")
             else:
                 status_msg = await message.answer("⏳ Загружаю расписание всех групп... Это может занять несколько минут.")
             all_timetable = await get_all_groups_timetable(user_id=user_id, progress_message=status_msg)
             # Не удаляем сообщение, так как оно будет обновляться с прогрессом
         else:
-            all_timetable = all_groups_timetable_cache
+            all_timetable = timetable_service.all_groups_timetable_cache
             if status_msg:
                 try:
                     await status_msg.delete()
@@ -1148,17 +928,16 @@ async def cmd_classroom_timetable(message: types.Message, override: str = None):
     
     try:
         # Проверяем наличие кэша
-        global all_groups_timetable_cache, timetable_loading
         status_msg = None
-        if all_groups_timetable_cache is None:
-            if timetable_loading:
+        if timetable_service.all_groups_timetable_cache is None:
+            if timetable_service.timetable_loading:
                 status_msg = await message.answer("⏳ Расписание уже загружается, пожалуйста подождите...")
             else:
                 status_msg = await message.answer("⏳ Загружаю расписание всех групп... Это может занять несколько минут.")
             all_timetable = await get_all_groups_timetable(user_id=user_id, progress_message=status_msg)
             # Не удаляем сообщение, так как оно будет обновляться с прогрессом
         else:
-            all_timetable = all_groups_timetable_cache
+            all_timetable = timetable_service.all_groups_timetable_cache
             if status_msg:
                 try:
                     await status_msg.delete()
@@ -1194,17 +973,16 @@ async def cmd_teachers(message: types.Message):
     
     try:
         # Проверяем наличие кэша
-        global all_groups_timetable_cache, timetable_loading
         status_msg = None
-        if all_groups_timetable_cache is None:
-            if timetable_loading:
+        if timetable_service.all_groups_timetable_cache is None:
+            if timetable_service.timetable_loading:
                 status_msg = await message.answer("⏳ Расписание уже загружается, пожалуйста подождите...")
             else:
                 status_msg = await message.answer("⏳ Загружаю расписание всех групп... Это может занять несколько минут.")
             all_timetable = await get_all_groups_timetable(user_id=user_id, progress_message=status_msg)
             # Не удаляем сообщение, так как оно будет обновляться с прогрессом
         else:
-            all_timetable = all_groups_timetable_cache
+            all_timetable = timetable_service.all_groups_timetable_cache
             if status_msg:
                 try:
                     await status_msg.delete()
@@ -1511,17 +1289,16 @@ async def cmd_classrooms(message: types.Message):
     
     try:
         # Проверяем наличие кэша
-        global all_groups_timetable_cache, timetable_loading
         status_msg = None
-        if all_groups_timetable_cache is None:
-            if timetable_loading:
+        if timetable_service.all_groups_timetable_cache is None:
+            if timetable_service.timetable_loading:
                 status_msg = await message.answer("⏳ Расписание уже загружается, пожалуйста подождите...")
             else:
                 status_msg = await message.answer("⏳ Загружаю расписание всех групп... Это может занять несколько минут.")
             all_timetable = await get_all_groups_timetable(user_id=user_id, progress_message=status_msg)
             # Не удаляем сообщение, так как оно будет обновляться с прогрессом
         else:
-            all_timetable = all_groups_timetable_cache
+            all_timetable = timetable_service.all_groups_timetable_cache
             if status_msg:
                 try:
                     await status_msg.delete()
@@ -1615,17 +1392,16 @@ async def cmd_group_timetable(message: types.Message, override: str = None):
     
     try:
         # Проверяем наличие кэша расписания всех групп
-        global all_groups_timetable_cache, timetable_loading
         status_msg = None
-        if all_groups_timetable_cache is None:
-            if timetable_loading:
+        if timetable_service.all_groups_timetable_cache is None:
+            if timetable_service.timetable_loading:
                 status_msg = await message.answer("⏳ Расписание уже загружается, пожалуйста подождите...")
             else:
                 status_msg = await message.answer("⏳ Загружаю расписание всех групп... Это может занять несколько минут.")
             all_timetable = await get_all_groups_timetable(user_id=user_id, progress_message=status_msg)
             # Не удаляем сообщение, так как оно будет обновляться с прогрессом
         else:
-            all_timetable = all_groups_timetable_cache
+            all_timetable = timetable_service.all_groups_timetable_cache
             if status_msg:
                 try:
                     await status_msg.delete()
@@ -2714,18 +2490,8 @@ async def auto_login_all_users():
         logging.debug("Пауза между логинами пользователей: %.2fs", delay)
         await asyncio.sleep(delay)
 
-async def preload_timetable():
-    """
-    Предзагружает расписание всех групп в фоновом режиме при старте бота.
-    Сначала пытается загрузить из JSON, если не получается - загружает с сервера.
-    """
-    try:
-        logging.info("📅 Начало предзагрузки расписания всех групп...")
-        # Пытаемся загрузить из JSON (не принудительно)
-        await get_all_groups_timetable(force_reload=False, user_id=None, progress_message=None)
-        logging.info("✅ Расписание всех групп предзагружено")
-    except Exception as e:
-        logging.error(f"❌ Ошибка при предзагрузке расписания: {e}", exc_info=True)
+# preload_timetable извлечён в timetable_service.py (задача 4.1, шаг 12b) —
+# реэкспортируется выше; on_startup использует его как preload_timetable.
 
 async def heartbeat_loop():
     """Периодически обновляет heartbeat-файл — для Docker healthcheck."""
