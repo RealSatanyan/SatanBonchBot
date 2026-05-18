@@ -4036,16 +4036,7 @@ BTN_PROFILE = "👤 Профиль"
 BTN_HELP = "❓ Помощь"
 
 
-class UIStates(StatesGroup):
-    login_email = State()
-    login_password = State()
-    ask_group = State()
-    ask_teacher = State()
-    ask_classroom = State()
-    write_recipient = State()
-    write_pick = State()
-    write_title = State()
-    write_text = State()
+from states import UIStates
 
 
 def main_menu_kb() -> ReplyKeyboardMarkup:
