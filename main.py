@@ -163,6 +163,23 @@ from timetable_service import (
     preload_timetable,
 )
 
+# Сервис списка сообщений ЛК извлечён в messages_service.py (задача 4.1,
+# шаг 12c). main.py остаётся фасадом — реэкспортит публичные функции сервиса
+# и константу MESSAGES_CACHE_TTL_SEC. Внутреннее изменяемое состояние сервиса
+# (message_states, pending_lk_messages) НЕ реэкспортируется именами — main.py
+# обращается к нему как messages_service.<имя> (модуль-квалифицированный
+# доступ), т.к. эти словари читаются/пишутся хэндлерами и их мутации должны
+# быть видны всем.
+import messages_service
+from messages_service import (
+    MESSAGES_CACHE_TTL_SEC,
+    show_message_list,
+    format_message_count,
+    _messages_cache_fresh,
+    _build_message_state,
+    _invalidate_messages_cache,
+)
+
 
 # Шифрование паролей (ENCRYPTION_KEY, _fernet, encrypt_password,
 # decrypt_password) извлечено в security.py — реэкспортируется выше.
@@ -191,52 +208,12 @@ _background_tasks: list = []
 # (all_groups_timetable_cache, timetable_loading, timetable_progress,
 # timetable_progress_users) извлечено в timetable_service.py (задача 4.1,
 # шаг 12b). Доступ — через timetable_service.<имя> (модуль-квалифицированно).
-# Состояния навигации по сообщениям
-message_states = {}  # Словарь {user_id: {'messages': [], 'current_index': 0}} для навигации по сообщениям
-# Тёплый кэш списка сообщений: повторный заход в /messages в пределах TTL
-# показывает уже загруженное, не перезапрашивая первую страницу из ЛК.
-MESSAGES_CACHE_TTL_SEC = 300
-
-
-def format_message_count(loaded: int, total_pages: int, per_page: int, has_more: bool) -> str:
-    """Счётчик сообщений: точное число либо оценка «≈N» (страниц × размер)."""
-    if not has_more:
-        return str(loaded)
-    if total_pages > 1 and per_page > 0:
-        return f"≈{total_pages * per_page}"
-    return f"{loaded}+"
-
-
-def _messages_cache_fresh(state, now_ts: float, ttl_sec: float) -> bool:
-    """True — кэш списка сообщений ещё свежий, можно показать без перезапроса."""
-    if not state or not state.get('messages'):
-        return False
-    fetched_at = state.get('fetched_at')
-    if fetched_at is None:
-        return False
-    return (now_ts - fetched_at) < ttl_sec
-
-
-def _build_message_state(api, first_page: dict) -> dict:
-    """Собирает запись message_states после загрузки первой страницы сообщений."""
-    messages = first_page['messages']
-    return {
-        'api': api,
-        'messages': messages,
-        'total_pages': first_page['total_pages'],
-        'loaded_pages': 1,
-        'current_index': 0,
-        'per_page': len(messages),
-        'fetched_at': time_module.time(),
-    }
-
-
-def _invalidate_messages_cache(user_id) -> None:
-    """Помечает кэш сообщений устаревшим — следующий /messages перезапросит ЛК."""
-    state = message_states.get(user_id)
-    if state:
-        state['fetched_at'] = None
-pending_lk_messages = {}  # Словарь {(user_id, recipient_id): {'text': str, 'title': str, 'label': str}}
+# Сервис списка сообщений ЛК (message_states, pending_lk_messages,
+# MESSAGES_CACHE_TTL_SEC, show_message_list, format_message_count,
+# _messages_cache_fresh, _build_message_state, _invalidate_messages_cache)
+# извлечён в messages_service.py (задача 4.1, шаг 12c). Функции и константа
+# реэкспортированы выше; изменяемые словари доступны как
+# messages_service.message_states / messages_service.pending_lk_messages.
 LOGIN_CMD_RE = re.compile(r"^/login(?:@\w+)?\s+(\S+)\s+(\S+)\s*$")
 MAX_EMAIL_LEN = 254
 MAX_PASSWORD_LEN = 256
@@ -1216,7 +1193,7 @@ async def cmd_send_lk(message: types.Message, override_text: str = None):
         # Сохраняем текст сообщения для последующей отправки после выбора
         for r in choices:
             key = (user_id, r["id"])
-            pending_lk_messages[key] = {
+            messages_service.pending_lk_messages[key] = {
                 "text": text,
                 "title": "",
                 "label": r["label"],
@@ -1246,11 +1223,11 @@ async def handle_lk_send_callback(callback_query: CallbackQuery):
         recipient_id = int(data.split("_")[-1])
         key = (user_id, recipient_id)
 
-        if key not in pending_lk_messages:
+        if key not in messages_service.pending_lk_messages:
             await callback_query.answer("Сохраненное сообщение не найдено, попробуйте снова через /send_lk.", show_alert=True)
             return
 
-        payload = pending_lk_messages.pop(key)
+        payload = messages_service.pending_lk_messages.pop(key)
         text = payload.get("text", "")
         title = payload.get("title", "")
         label = payload.get("label", f"id={recipient_id}")
@@ -1520,7 +1497,7 @@ async def cmd_messages(message: types.Message, uid: int = None):
         # Тёплый кэш: повторный заход в пределах TTL — показываем без перезапроса
         # первой страницы из ЛК (экономит ~2–3 с). Кнопка «🔄 Обновить список»
         # остаётся; кэш сбрасывается после отправки сообщения.
-        cached = message_states.get(user_id)
+        cached = messages_service.message_states.get(user_id)
         if _messages_cache_fresh(cached, time_module.time(), MESSAGES_CACHE_TTL_SEC):
             logging.info(f"Сообщения для {user_id} показаны из кэша (без перезапроса ЛК)")
             await show_message_list(user_id, message.chat.id, 0)
@@ -1548,7 +1525,7 @@ async def cmd_messages(message: types.Message, uid: int = None):
             return
 
         # Сохраняем состояние для навигации (включая api для подгрузки страниц)
-        message_states[user_id] = _build_message_state(message_api, first_page)
+        messages_service.message_states[user_id] = _build_message_state(message_api, first_page)
 
         try:
             await status_msg.delete()
@@ -1561,66 +1538,8 @@ async def cmd_messages(message: types.Message, uid: int = None):
         logging.error(f"Ошибка при получении сообщений для пользователя {user_id}: {e}", exc_info=True)
         await message.answer("❌ Не удалось загрузить сообщения. Попробуй позже.")
 
-async def show_message_list(user_id: int, chat_id: int, index: int):
-    """
-    Отображает список сообщений с навигацией.
-    """
-    if user_id not in message_states:
-        return
-
-    state = message_states[user_id]
-    messages = state['messages']
-    if not messages or index < 0 or index >= len(messages):
-        return
-
-    # Есть ли ещё не загруженные страницы (для счётчика и кнопки «Вперёд»).
-    has_more_pages = state.get('loaded_pages', 1) < state.get('total_pages', 1)
-
-    msg = messages[index]
-    
-    # Формируем текст сообщения
-    unread_marker = "🔴" if msg.get('is_unread', False) else ""
-    files_marker = "📎" if msg.get('has_files', False) else ""
-    date = msg.get('date', '')[:10] if msg.get('date') else ''
-    sender = msg.get('sender', 'Неизвестно')
-    if sender and '(' in sender:
-        sender = sender.split('(')[0].strip()
-    
-    title = msg.get('title', 'Без названия')
-    if len(title) > 100:
-        title = title[:97] + '...'
-    
-    count_display = format_message_count(
-        len(messages), state.get('total_pages', 1), state.get('per_page', 0), has_more_pages
-    )
-    text = f"{unread_marker} *Сообщение {index + 1} из {count_display}*\n\n"
-    text += f"📅 *Дата:* {date}\n"
-    text += f"👤 *Отправитель:* {sender}\n"
-    text += f"📋 *Тема:* {title}\n"
-    if files_marker:
-        text += f"{files_marker} *Есть файлы*\n"
-    
-    # Создаем клавиатуру для навигации
-    keyboard = []
-    row = []
-    
-    if index > 0:
-        row.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"msg_prev_{index}"))
-    if index < len(messages) - 1 or has_more_pages:
-        row.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"msg_next_{index}"))
-    
-    if row:
-        keyboard.append(row)
-    
-    keyboard.append([InlineKeyboardButton(text="📖 Открыть сообщение", callback_data=f"msg_open_{msg['id']}")])
-    keyboard.append([InlineKeyboardButton(text="🔄 Обновить список", callback_data="msg_refresh")])
-    
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    
-    try:
-        await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=reply_markup)
-    except Exception as e:
-        logging.error(f"Ошибка при отправке списка сообщений: {e}")
+# show_message_list извлечён в messages_service.py (задача 4.1, шаг 12c) —
+# реэкспортирован выше как фасадное имя main.show_message_list.
 
 @dp.callback_query(F.data.startswith("msg_"))
 async def handle_message_callback(callback_query: CallbackQuery):
@@ -1634,8 +1553,8 @@ async def handle_message_callback(callback_query: CallbackQuery):
         if data.startswith("msg_prev_"):
             # Переход к предыдущему сообщению
             index = int(data.split("_")[-1]) - 1
-            if user_id in message_states and index >= 0:
-                message_states[user_id]['current_index'] = index
+            if user_id in messages_service.message_states and index >= 0:
+                messages_service.message_states[user_id]['current_index'] = index
                 await callback_query.answer()
                 await callback_query.message.delete()
                 await show_message_list(user_id, callback_query.message.chat.id, index)
@@ -1645,7 +1564,7 @@ async def handle_message_callback(callback_query: CallbackQuery):
         elif data.startswith("msg_next_"):
             # Переход к следующему сообщению
             index = int(data.split("_")[-1]) + 1
-            state = message_states.get(user_id)
+            state = messages_service.message_states.get(user_id)
             if not state:
                 await callback_query.answer("Список устарел — открой «Сообщения» заново", show_alert=True)
                 return
@@ -1681,8 +1600,8 @@ async def handle_message_callback(callback_query: CallbackQuery):
             
             # Находим информацию о сообщении из списка
             msg_info = None
-            if user_id in message_states:
-                for msg in message_states[user_id]['messages']:
+            if user_id in messages_service.message_states:
+                for msg in messages_service.message_states[user_id]['messages']:
                     if msg['id'] == message_id:
                         msg_info = msg
                         break
@@ -1741,15 +1660,15 @@ async def handle_message_callback(callback_query: CallbackQuery):
                 await callback_query.message.delete()
                 return
 
-            message_states[user_id] = _build_message_state(message_api, first_page)
+            messages_service.message_states[user_id] = _build_message_state(message_api, first_page)
 
             await callback_query.message.delete()
             await show_message_list(user_id, callback_query.message.chat.id, 0)
         
         elif data == "msg_back_to_list":
             # Возврат к списку сообщений
-            if user_id in message_states:
-                current_index = message_states[user_id].get('current_index', 0)
+            if user_id in messages_service.message_states:
+                current_index = messages_service.message_states[user_id].get('current_index', 0)
                 await callback_query.message.delete()
                 await show_message_list(user_id, callback_query.message.chat.id, current_index)
             else:
