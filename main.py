@@ -57,6 +57,22 @@ import security
 from security import *
 from security import _fernet, _login_attempts
 
+# Работа с БД извлечена в db.py (задача 4.1, шаг 4). main.py остаётся фасадом —
+# реэкспортит DB-хелперы. Импорт идёт ПОСЛЕ security: db.py при импорте делает
+# side-effects (sqlite3.connect + CREATE TABLE / миграции). conn/cursor НЕ
+# реэкспортируются именами — main.py обращается к ним как db.conn / db.cursor,
+# чтобы подмена БД в тестовой фикстуре temp_db была видна.
+import db
+from db import (
+    is_registered,
+    get_notify_settings,
+    set_notify_enabled,
+    set_notify_minutes,
+    get_autoclick_enabled,
+    set_autoclick_enabled,
+    NOTIFY_DEFAULT_MINUTES,
+)
+
 # Импорт для работы с расписанием без авторизации
 try:
     from TImetabels import BonchAPI as TimetableBonchAPI, BROWSER_HEADERS
@@ -467,30 +483,8 @@ class DebuggableBonchAPI(BonchAPI):
 
 # Telegram-сессия БЕЗ прокси.
 tg_session = AiohttpSession()
-conn = sqlite3.connect('users.db', check_same_thread=False)
-cursor = conn.cursor()
-
-with closing(sqlite3.connect('users.db')) as db:
-    db.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            email TEXT NOT NULL,
-            password TEXT NOT NULL,
-            notify_enabled INTEGER NOT NULL DEFAULT 1,
-            notify_minutes INTEGER NOT NULL DEFAULT 10,
-            autoclick_enabled INTEGER NOT NULL DEFAULT 1
-        )
-    ''')
-    # Миграция уже существующих БД: добавляем недостающие колонки настроек
-    # (ALTER TABLE ADD COLUMN идемпотентным не является).
-    _user_columns = {row[1] for row in db.execute("PRAGMA table_info(users)")}
-    if 'notify_enabled' not in _user_columns:
-        db.execute('ALTER TABLE users ADD COLUMN notify_enabled INTEGER NOT NULL DEFAULT 1')
-    if 'notify_minutes' not in _user_columns:
-        db.execute('ALTER TABLE users ADD COLUMN notify_minutes INTEGER NOT NULL DEFAULT 10')
-    if 'autoclick_enabled' not in _user_columns:
-        db.execute('ALTER TABLE users ADD COLUMN autoclick_enabled INTEGER NOT NULL DEFAULT 1')
-    db.commit()
+# Соединение с БД (conn/cursor), схема и миграции извлечены в db.py — импорт db
+# выше уже выполнил их side-effects. Доступ к курсору: db.cursor / db.conn.
 
 bot = Bot(token=BOT_TOKEN, session=tg_session)
 dp = Dispatcher()
@@ -933,8 +927,8 @@ class LessonController:
         """
         Переавторизует пользователя при истечении сессии.
         """
-        cursor.execute('SELECT email, password FROM users WHERE user_id = ?', (self.user_id,))
-        result = cursor.fetchone()
+        db.cursor.execute('SELECT email, password FROM users WHERE user_id = ?', (self.user_id,))
+        result = db.cursor.fetchone()
         if not result:
             raise ValueError(f"Не найдены данные для переавторизации пользователя {self.user_id}")
         
@@ -1127,9 +1121,9 @@ async def cmd_my_account(message: types.Message):
     user_id = message.from_user.id
     logging.info(f"Команда /my_account от пользователя {user_id}")
     
-    cursor.execute('SELECT email FROM users WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone()
-    
+    db.cursor.execute('SELECT email FROM users WHERE user_id = ?', (user_id,))
+    result = db.cursor.fetchone()
+
     status_parts = []
     if result:
         status_parts.append(f"📧 Email: {result[0]}")
@@ -3781,8 +3775,8 @@ async def auto_login_user(user_id):
     Автоматически авторизует пользователя, если он есть в базе данных.
     Возвращает True, если авторизация успешна, False в противном случае.
     """
-    cursor.execute('SELECT email, password FROM users WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone()
+    db.cursor.execute('SELECT email, password FROM users WHERE user_id = ?', (user_id,))
+    result = db.cursor.fetchone()
     if not result:
         logging.info(f"Пользователь {user_id} не найден в базе данных.")
         return False
@@ -3845,8 +3839,8 @@ async def get_message_api(user_id: int) -> Optional[TimetableBonchAPI]:
     if not hasattr(existing_api, 'cookies') or not existing_api.cookies:
         logging.warning(f"У пользователя {user_id} нет cookies в API")
         # Попробуем переавторизоваться
-        cursor.execute('SELECT email, password FROM users WHERE user_id = ?', (user_id,))
-        result = cursor.fetchone()
+        db.cursor.execute('SELECT email, password FROM users WHERE user_id = ?', (user_id,))
+        result = db.cursor.fetchone()
         if result:
             email, password = result
             await existing_api.login(email, decrypt_password(password))
@@ -4106,65 +4100,12 @@ def notify_settings_kb(enabled: bool, minutes: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def is_registered(user_id: int) -> bool:
-    cursor.execute('SELECT 1 FROM users WHERE user_id = ?', (user_id,))
-    return cursor.fetchone() is not None
-
+# DB-хелперы (is_registered, get/set_notify_*, get/set_autoclick_enabled) и
+# константа NOTIFY_DEFAULT_MINUTES извлечены в db.py — реэкспортируются выше.
 
 # --- Настройки уведомлений о парах -------------------------------------------
-NOTIFY_DEFAULT_MINUTES = 10
+# NOTIFY_MINUTE_OPTIONS — про UI/клавиатуру, остаётся в main.py.
 NOTIFY_MINUTE_OPTIONS = (5, 10, 15, 30)
-
-
-def get_notify_settings(user_id: int) -> tuple[bool, int]:
-    """Возвращает (уведомления включены, за сколько минут предупреждать о паре)."""
-    cursor.execute(
-        'SELECT notify_enabled, notify_minutes FROM users WHERE user_id = ?',
-        (user_id,),
-    )
-    row = cursor.fetchone()
-    if not row:
-        return True, NOTIFY_DEFAULT_MINUTES
-    enabled_raw, minutes_raw = row
-    enabled = True if enabled_raw is None else bool(enabled_raw)
-    minutes = int(minutes_raw) if minutes_raw else NOTIFY_DEFAULT_MINUTES
-    return enabled, minutes
-
-
-def set_notify_enabled(user_id: int, enabled: bool) -> None:
-    with conn:
-        cursor.execute(
-            'UPDATE users SET notify_enabled = ? WHERE user_id = ?',
-            (1 if enabled else 0, user_id),
-        )
-
-
-def set_notify_minutes(user_id: int, minutes: int) -> None:
-    with conn:
-        cursor.execute(
-            'UPDATE users SET notify_minutes = ? WHERE user_id = ?',
-            (minutes, user_id),
-        )
-
-
-def get_autoclick_enabled(user_id: int) -> bool:
-    """
-    Включена ли автоотметка пользователем. Учитывается при автозапуске
-    автокликалки на старте бота: выключил вручную — не запускаем снова.
-    """
-    cursor.execute('SELECT autoclick_enabled FROM users WHERE user_id = ?', (user_id,))
-    row = cursor.fetchone()
-    if not row or row[0] is None:
-        return True
-    return bool(row[0])
-
-
-def set_autoclick_enabled(user_id: int, enabled: bool) -> None:
-    with conn:
-        cursor.execute(
-            'UPDATE users SET autoclick_enabled = ? WHERE user_id = ?',
-            (1 if enabled else 0, user_id),
-        )
 
 
 async def perform_login(user_id: int, email: str, password: str) -> bool:
@@ -4176,16 +4117,16 @@ async def perform_login(user_id: int, email: str, password: str) -> bool:
             return False
         apis[user_id] = api
         controllers[user_id] = LessonController(api, bot, user_id)
-        cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
-        existing = cursor.fetchone()
+        db.cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
+        existing = db.cursor.fetchone()
         encrypted_password = encrypt_password(password)
-        with conn:
+        with db.conn:
             if existing:
-                cursor.execute('UPDATE users SET email = ?, password = ? WHERE user_id = ?',
-                               (email, encrypted_password, user_id))
+                db.cursor.execute('UPDATE users SET email = ?, password = ? WHERE user_id = ?',
+                                  (email, encrypted_password, user_id))
             else:
-                cursor.execute('INSERT INTO users (user_id, email, password) VALUES (?, ?, ?)',
-                               (user_id, email, encrypted_password))
+                db.cursor.execute('INSERT INTO users (user_id, email, password) VALUES (?, ?, ?)',
+                                  (user_id, email, encrypted_password))
         return True
     except Exception as e:
         logging.error("perform_login: ошибка для %s: %s", user_id, e, exc_info=True)
@@ -4261,8 +4202,8 @@ async def menu_profile(message: types.Message, state: FSMContext):
             reply_markup=login_prompt_kb(),
         )
         return
-    cursor.execute('SELECT email FROM users WHERE user_id = ?', (user_id,))
-    row = cursor.fetchone()
+    db.cursor.execute('SELECT email FROM users WHERE user_id = ?', (user_id,))
+    row = db.cursor.fetchone()
     email = row[0] if row else "—"
     active = "🟢 активен" if user_id in apis else "🟡 восстановится при первом действии"
     notify_enabled, notify_minutes = get_notify_settings(user_id)
@@ -4801,8 +4742,8 @@ async def cb_logout(callback_query: CallbackQuery, state: FSMContext):
         except Exception:
             pass
     apis.pop(user_id, None)
-    with conn:
-        cursor.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
+    with db.conn:
+        db.cursor.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
     await callback_query.answer("Вы вышли")
     await callback_query.message.answer(
         "🚪 Ты вышел из личного кабинета, сохранённые данные удалены.\n"
@@ -4835,8 +4776,8 @@ async def auto_login_all_users():
     Автоматически авторизует всех пользователей в фоновом режиме.
     """
     logging.info("👥 Проверка пользователей в базе данных...")
-    cursor.execute('SELECT user_id FROM users')
-    users = cursor.fetchall()
+    db.cursor.execute('SELECT user_id FROM users')
+    users = db.cursor.fetchall()
     logging.info(f"📊 Найдено пользователей: {len(users)}")
     
     for idx, user in enumerate(users):

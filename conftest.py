@@ -44,22 +44,26 @@ def load_fixture():
 @pytest.fixture
 def temp_db():
     """
-    Временная in-memory БД users; подменяет main.conn / main.cursor,
+    Временная in-memory БД users; подменяет db.conn / db.cursor,
     чтобы тесты DB-хелперов не трогали настоящий users.db.
+
+    conn/cursor живут в db.py (задача 4.1, шаг 4). DB-функции и весь inline-SQL
+    в main.py обращаются к ним как db.conn / db.cursor, поэтому подмена этих
+    модульных глобалей видна и в db.py, и в main.py.
     """
-    import main
+    import db
 
     test_conn = sqlite3.connect(":memory:")
     test_conn.execute(USERS_SCHEMA)
     test_conn.commit()
 
-    original_conn, original_cursor = main.conn, main.cursor
-    main.conn = test_conn
-    main.cursor = test_conn.cursor()
+    original_conn, original_cursor = db.conn, db.cursor
+    db.conn = test_conn
+    db.cursor = test_conn.cursor()
     try:
         yield test_conn
     finally:
-        main.conn, main.cursor = original_conn, original_cursor
+        db.conn, db.cursor = original_conn, original_cursor
         test_conn.close()
 
 
