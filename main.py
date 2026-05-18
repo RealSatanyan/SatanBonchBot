@@ -700,6 +700,49 @@ timetable_progress_users = {}  # Словарь {user_id: message} для отп
 timetable_progress = {'current': 0, 'total': 0, 'start_time': None}  # Прогресс загрузки
 # Состояния навигации по сообщениям
 message_states = {}  # Словарь {user_id: {'messages': [], 'current_index': 0}} для навигации по сообщениям
+# Тёплый кэш списка сообщений: повторный заход в /messages в пределах TTL
+# показывает уже загруженное, не перезапрашивая первую страницу из ЛК.
+MESSAGES_CACHE_TTL_SEC = 300
+
+
+def format_message_count(loaded: int, total_pages: int, per_page: int, has_more: bool) -> str:
+    """Счётчик сообщений: точное число либо оценка «≈N» (страниц × размер)."""
+    if not has_more:
+        return str(loaded)
+    if total_pages > 1 and per_page > 0:
+        return f"≈{total_pages * per_page}"
+    return f"{loaded}+"
+
+
+def _messages_cache_fresh(state, now_ts: float, ttl_sec: float) -> bool:
+    """True — кэш списка сообщений ещё свежий, можно показать без перезапроса."""
+    if not state or not state.get('messages'):
+        return False
+    fetched_at = state.get('fetched_at')
+    if fetched_at is None:
+        return False
+    return (now_ts - fetched_at) < ttl_sec
+
+
+def _build_message_state(api, first_page: dict) -> dict:
+    """Собирает запись message_states после загрузки первой страницы сообщений."""
+    messages = first_page['messages']
+    return {
+        'api': api,
+        'messages': messages,
+        'total_pages': first_page['total_pages'],
+        'loaded_pages': 1,
+        'current_index': 0,
+        'per_page': len(messages),
+        'fetched_at': time_module.time(),
+    }
+
+
+def _invalidate_messages_cache(user_id) -> None:
+    """Помечает кэш сообщений устаревшим — следующий /messages перезапросит ЛК."""
+    state = message_states.get(user_id)
+    if state:
+        state['fetched_at'] = None
 pending_lk_messages = {}  # Словарь {(user_id, recipient_id): {'text': str, 'title': str, 'label': str}}
 LOGIN_CMD_RE = re.compile(r"^/login(?:@\w+)?\s+(\S+)\s+(\S+)\s*$")
 MAX_EMAIL_LEN = 254
@@ -3629,14 +3672,23 @@ async def cmd_messages(message: types.Message, uid: int = None):
     """
     user_id = uid if uid is not None else message.from_user.id
     logging.info(f"Пользователь {user_id} запросил просмотр сообщений")
-    
+
     try:
+        # Тёплый кэш: повторный заход в пределах TTL — показываем без перезапроса
+        # первой страницы из ЛК (экономит ~2–3 с). Кнопка «🔄 Обновить список»
+        # остаётся; кэш сбрасывается после отправки сообщения.
+        cached = message_states.get(user_id)
+        if _messages_cache_fresh(cached, time_module.time(), MESSAGES_CACHE_TTL_SEC):
+            logging.info(f"Сообщения для {user_id} показаны из кэша (без перезапроса ЛК)")
+            await show_message_list(user_id, message.chat.id, 0)
+            return
+
         # Получаем API для работы с сообщениями
         message_api = await get_message_api(user_id)
         if not message_api:
             await message.answer("❌ Не удалось авторизоваться. Пожалуйста, выполните /login для авторизации.")
             return
-        
+
         # Ленивая загрузка: тянем только первую страницу (~20 свежих сообщений),
         # остальные подгружаются по мере листания. Так /messages открывается за
         # пару секунд вместо ~10 на все 35 страниц.
@@ -3653,13 +3705,7 @@ async def cmd_messages(message: types.Message, uid: int = None):
             return
 
         # Сохраняем состояние для навигации (включая api для подгрузки страниц)
-        message_states[user_id] = {
-            'api': message_api,
-            'messages': messages,
-            'total_pages': first_page['total_pages'],
-            'loaded_pages': 1,
-            'current_index': 0,
-        }
+        message_states[user_id] = _build_message_state(message_api, first_page)
 
         try:
             await status_msg.delete()
@@ -3701,7 +3747,9 @@ async def show_message_list(user_id: int, chat_id: int, index: int):
     if len(title) > 100:
         title = title[:97] + '...'
     
-    count_display = f"{len(messages)}+" if has_more_pages else str(len(messages))
+    count_display = format_message_count(
+        len(messages), state.get('total_pages', 1), state.get('per_page', 0), has_more_pages
+    )
     text = f"{unread_marker} *Сообщение {index + 1} из {count_display}*\n\n"
     text += f"📅 *Дата:* {date}\n"
     text += f"👤 *Отправитель:* {sender}\n"
@@ -3850,13 +3898,7 @@ async def handle_message_callback(callback_query: CallbackQuery):
                 await callback_query.message.delete()
                 return
 
-            message_states[user_id] = {
-                'api': message_api,
-                'messages': first_page['messages'],
-                'total_pages': first_page['total_pages'],
-                'loaded_pages': 1,
-                'current_index': 0,
-            }
+            message_states[user_id] = _build_message_state(message_api, first_page)
 
             await callback_query.message.delete()
             await show_message_list(user_id, callback_query.message.chat.id, 0)
@@ -4838,6 +4880,9 @@ async def fsm_write_text(message: types.Message, state: FSMContext):
         f"✅ Сообщение отправлено: {recipient_label}" if ok
         else f"❌ Не удалось отправить сообщение: {recipient_label}"
     )
+    if ok:
+        # Список сообщений мог измениться — сбрасываем тёплый кэш.
+        _invalidate_messages_cache(user_id)
 
 
 # --- Профиль ---
