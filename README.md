@@ -45,10 +45,16 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 ```bash
 docker compose up --build -d      # сборка и запуск
 docker compose logs -f            # логи
+docker compose ps                 # статус, в т.ч. healthy/unhealthy
 ```
 
 `.env` и `users.db` пробрасываются в контейнер через volume-монтирование
 (см. `docker-compose.yml`), в образ не запекаются.
+
+Контейнер имеет **healthcheck**: бот обновляет heartbeat-файл, `healthcheck.py`
+проверяет его свежесть — `docker compose ps` покажет `unhealthy`, если событийный
+цикл завис. При остановке/рестарте бот корректно гасит автокликалки и фоновые
+задачи (graceful shutdown).
 
 ## Переменные окружения
 
@@ -59,7 +65,8 @@ docker compose logs -f            # логи
 | `BOT_TOKEN` | да | Токен Telegram-бота. |
 | `ENCRYPTION_KEY` | да | Ключ Fernet для шифрования паролей в `users.db`. Потеря = пароли не восстановить. |
 | `ALL_PROXY` | нет | Прокси для запросов в ЛК (`lk.sut.ru`, `cabinet.sut.ru`). Telegram ходит напрямую. |
-| `DEBUG_DUMPS`, `DEBUG_DUMPS_KEEP` | нет | HTML-дампы страниц ЛК для отладки парсеров (по умолчанию вкл, хранится 30 последних). |
+| `LOG_LEVEL` | нет | Уровень логов (`DEBUG`/`INFO`/`WARNING`/`ERROR`). По умолчанию `INFO`; `DEBUG` — только для отладки. |
+| `DEBUG_DUMPS`, `DEBUG_DUMPS_KEEP` | нет | HTML-дампы страниц ЛК для отладки парсеров. По умолчанию **выкл**; `DEBUG_DUMPS=1` включает, хранится 30 последних (см. `debug_dumps/`). |
 | `LOGIN_RATE_LIMIT`, `LOGIN_RATE_WINDOW_SEC` | нет | Лимит попыток входа (по умолчанию 5 за 5 минут). |
 | `LK_CONCURRENCY`, `LK_LOGIN_DELAY_SEC`, `LK_LOGIN_JITTER_SEC` | нет | Ограничение частоты запросов в ЛК. |
 
@@ -85,7 +92,8 @@ pytest
 
 Тесты в `tests/` покрывают чистую логику: парсеры HTML, шифрование, rate-limit,
 настройки, форматирование расписания, логику интервалов пар. Сетевые функции
-и обработчики Telegram юнит-тестами не покрываются.
+и обработчики Telegram юнит-тестами не покрываются. Прогоняйте `pytest` перед
+пушем — деплой через Coolify тесты не запускает.
 
 ## Команды бота
 

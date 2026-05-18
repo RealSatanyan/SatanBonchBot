@@ -156,6 +156,14 @@ def test_save_debug_dump_disabled_returns_none(monkeypatch, tmp_path):
     assert not (tmp_path / "debug_dumps").exists()
 
 
+def test_save_debug_dump_disabled_by_default(monkeypatch, tmp_path):
+    """Без переменной DEBUG_DUMPS дампы не пишутся — opt-in, не opt-out."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DEBUG_DUMPS", raising=False)
+    assert main.save_debug_dump("test", "<html>") is None
+    assert not (tmp_path / "debug_dumps").exists()
+
+
 def test_save_debug_dump_writes_file(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("DEBUG_DUMPS", "1")

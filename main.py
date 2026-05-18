@@ -463,14 +463,27 @@ class DebuggableBonchAPI(BonchAPI):
         self._refresh_cookies_view()
         return clicked
 
-logging.getLogger('aiogram').setLevel(logging.DEBUG)
+def _resolve_log_level(name: Optional[str]) -> int:
+    """LOG_LEVEL из .env → числовой уровень logging. Неизвестное значение → INFO."""
+    level = getattr(logging, (name or "").strip().upper(), None)
+    return level if isinstance(level, int) else logging.INFO
+
+
+load_dotenv()
+
+# Уровень логирования берётся из .env (LOG_LEVEL), по умолчанию INFO.
+# DEBUG в проде раздувает логи и может писать чувствительные данные.
+_LOG_LEVEL = _resolve_log_level(os.getenv("LOG_LEVEL", "INFO"))
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=_LOG_LEVEL,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
+# aiogram на DEBUG/INFO очень шумный — держим не ниже WARNING, если это не отладка.
+logging.getLogger('aiogram').setLevel(
+    logging.DEBUG if _LOG_LEVEL <= logging.DEBUG else logging.WARNING
+)
 
-load_dotenv()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 
 # Прокси нужен ТОЛЬКО для запросов в ЛК (lk.sut.ru).
@@ -563,6 +576,23 @@ dp = Dispatcher()
 
 controllers = {}  # Словарь для хранения контроллеров
 apis = {}  # Словарь для хранения экземпляров BonchAPI
+
+# --- Heartbeat для Docker healthcheck ---------------------------------------
+# Пока событийный цикл жив, heartbeat_loop периодически обновляет mtime файла.
+# healthcheck.py (отдельный процесс) проверяет его свежесть. См. docker-compose.yml.
+HEARTBEAT_FILE = Path(os.getenv("HEARTBEAT_FILE", "/tmp/satanbot_heartbeat"))
+HEARTBEAT_INTERVAL_SEC = 30
+
+# Хэндлы фоновых задач (heartbeat, автологин, предзагрузка) — для graceful shutdown.
+_background_tasks: list = []
+
+
+def _write_heartbeat(path: Path) -> None:
+    """Обновляет mtime heartbeat-файла — метка «событийный цикл жив»."""
+    try:
+        path.touch()
+    except Exception:
+        logging.warning("Не удалось обновить heartbeat-файл %s", path, exc_info=True)
 # Экземпляр BonchAPI для работы с расписанием без авторизации (преподаватели, кабинеты)
 timetable_api = None  # Будет инициализирован при первом использовании
 all_groups_timetable_cache = None  # Кэш расписания всех групп
@@ -655,12 +685,12 @@ def _prune_debug_dumps(dump_dir: Path) -> None:
 def save_debug_dump(prefix: str, content: str) -> Optional[Path]:
     """
     Сохраняет HTML-дамп в debug_dumps/ для отладки парсеров.
-    Управляется через .env:
-      DEBUG_DUMPS=0        — полностью отключить дампы;
+    Управляется через .env (по умолчанию ВЫКЛ — opt-in):
+      DEBUG_DUMPS=1        — включить дампы;
       DEBUG_DUMPS_KEEP=30  — сколько последних файлов хранить.
     Возвращает путь к файлу либо None (дампы отключены / ошибка записи).
     """
-    if os.getenv("DEBUG_DUMPS", "1").strip().lower() in ("0", "false", "no", "off"):
+    if os.getenv("DEBUG_DUMPS", "0").strip().lower() not in ("1", "true", "yes", "on"):
         return None
     try:
         dump_dir = Path("debug_dumps")
@@ -4621,21 +4651,62 @@ async def preload_timetable():
     except Exception as e:
         logging.error(f"❌ Ошибка при предзагрузке расписания: {e}", exc_info=True)
 
+async def heartbeat_loop():
+    """Периодически обновляет heartbeat-файл — для Docker healthcheck."""
+    while True:
+        _write_heartbeat(HEARTBEAT_FILE)
+        await asyncio.sleep(HEARTBEAT_INTERVAL_SEC)
+
 async def on_startup(dp):
     logging.info("🚀 Запуск бота...")
     logging.info("📝 Установка команд бота...")
     await set_bot_commands(bot)
     logging.info("✅ Команды бота установлены")
-    
+
+    # Heartbeat для healthcheck: пишем сразу, дальше обновляем по таймеру.
+    _write_heartbeat(HEARTBEAT_FILE)
+    _background_tasks.append(asyncio.create_task(heartbeat_loop()))
+
     # Запускаем авторизацию пользователей в фоновом режиме
     logging.info("🔄 Запуск авторизации пользователей в фоновом режиме...")
-    asyncio.create_task(auto_login_all_users())
-    
+    _background_tasks.append(asyncio.create_task(auto_login_all_users()))
+
     # Запускаем предзагрузку расписания в фоновом режиме
     logging.info("📅 Запуск предзагрузки расписания всех групп в фоновом режиме...")
-    asyncio.create_task(preload_timetable())
-    
+    _background_tasks.append(asyncio.create_task(preload_timetable()))
+
     logging.info("✅ Инициализация завершена, polling готов к запуску...")
+
+async def on_shutdown():
+    """Корректная остановка: гасим автокликалки и фоновые задачи."""
+    logging.info("🛑 Остановка бота: завершаем фоновые задачи...")
+
+    # Сигналим автокликалкам остановиться и даём текущим LK-запросам доработать.
+    controller_tasks = []
+    for controller in list(controllers.values()):
+        controller.is_running = False
+        task = getattr(controller, "task", None)
+        if task and not task.done():
+            controller_tasks.append(task)
+    if controller_tasks:
+        _, still_running = await asyncio.wait(controller_tasks, timeout=15)
+        for task in still_running:
+            task.cancel()
+
+    # Гасим остальные фоновые задачи (heartbeat, автологин, предзагрузка).
+    for task in _background_tasks:
+        if not task.done():
+            task.cancel()
+
+    leftovers = [t for t in (*controller_tasks, *_background_tasks) if not t.done()]
+    if leftovers:
+        try:
+            await asyncio.wait(leftovers, timeout=10)
+        except Exception:
+            logging.warning("Не все фоновые задачи завершились вовремя", exc_info=True)
+
+    HEARTBEAT_FILE.unlink(missing_ok=True)
+    logging.info("🛑 Бот остановлен.")
 
 async def main():
     logging.info("🎯 Функция main() запущена")
@@ -4646,6 +4717,8 @@ async def main():
     except Exception as e:
         logging.error(f"❌ Критическая ошибка в main(): {e}", exc_info=True)
         raise
+    finally:
+        await on_shutdown()
 
 if __name__ == "__main__":
     asyncio.run(main())

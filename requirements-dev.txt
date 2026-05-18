@@ -4,5 +4,5 @@
 # Включает -r requirements.txt: тесты импортируют main.py / TImetabels.py,
 # которым нужны все рантайм-зависимости бота.
 -r requirements.txt
-pytest
-pytest-cov
+pytest==9.0.3
+pytest-cov==7.1.0

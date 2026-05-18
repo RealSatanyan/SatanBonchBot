@@ -8,6 +8,14 @@ services:
     # ALL_PROXY — прокси ТОЛЬКО для запросов в ЛК/sut.ru (Telegram ходит напрямую).
     volumes:
       - .:/app  # Монтируем текущую директорию для разработки (включая .env)
+    # «Бот жив»: heartbeat_loop в main.py обновляет /tmp/satanbot_heartbeat,
+    # healthcheck.py проверяет его свежесть. interval×retries даёт ~3 мин до unhealthy.
+    healthcheck:
+      test: ["CMD", "python", "-u", "healthcheck.py"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     logging:
       driver: "json-file"
       options:

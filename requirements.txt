@@ -1,9 +1,21 @@
-aiogram
-python-dotenv
-bonchapi
-pytz
-pillow>=10.0.0
-tqdm
-aiohttp-socks
-cryptography
-beautifulsoup4
+# Прямые зависимости бота. Версии запинены (==) для воспроизводимого деплоя:
+# обновление aiogram/bonchapi и т.п. не сломает бота без изменения этого файла.
+# Обновлять осознанно, прогнав тесты (pytest). См. plans/improvements-v2.md §2.2.
+
+# Telegram-бот и асинхронный HTTP
+aiogram==3.28.2
+aiohttp==3.13.5
+aiohttp-socks==0.11.0
+aiofiles==25.1.0
+yarl==1.23.0
+
+# Личный кабинет СПбГУТ
+bonchapi==0.0.7
+
+# Утилиты
+python-dotenv==1.2.2
+pytz==2024.1
+pillow==12.2.0
+tqdm==4.67.3
+cryptography==41.0.7
+beautifulsoup4==4.14.3
