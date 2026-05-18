@@ -66,8 +66,8 @@ def temp_db():
 @pytest.fixture
 def reset_rate_limit():
     """Очищает in-memory счётчик попыток входа до и после теста."""
-    import main
+    import security
 
-    main._login_attempts.clear()
+    security._login_attempts.clear()
     yield
-    main._login_attempts.clear()
+    security._login_attempts.clear()
