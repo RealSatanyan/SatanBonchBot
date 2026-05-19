@@ -75,3 +75,72 @@ def reset_rate_limit():
     security._login_attempts.clear()
     yield
     security._login_attempts.clear()
+
+
+@pytest.fixture
+def reset_registries():
+    """
+    Изолирует реестры lk_client.apis и lesson_controller.controllers.
+
+    perform_login / auto_login_user регистрируют в них API-инстансы и
+    контроллеры; фикстура восстанавливает исходное содержимое после теста.
+    """
+    import lk_client
+    import lesson_controller
+
+    apis_backup = dict(lk_client.apis)
+    controllers_backup = dict(lesson_controller.controllers)
+    lk_client.apis.clear()
+    lesson_controller.controllers.clear()
+    try:
+        yield
+    finally:
+        lk_client.apis.clear()
+        lk_client.apis.update(apis_backup)
+        lesson_controller.controllers.clear()
+        lesson_controller.controllers.update(controllers_backup)
+
+
+@pytest.fixture
+def reset_timetable_service():
+    """
+    Сохраняет и восстанавливает изменяемое состояние timetable_service.
+
+    Состояние (all_groups_timetable_cache, timetable_loading,
+    timetable_progress_users, timetable_progress) переприсваивается функциями
+    сервиса — без изоляции тесты влияли бы друг на друга.
+    """
+    import timetable_service as ts
+
+    backup = (
+        ts.all_groups_timetable_cache,
+        ts.timetable_loading,
+        dict(ts.timetable_progress_users),
+        dict(ts.timetable_progress),
+    )
+    ts.all_groups_timetable_cache = None
+    ts.timetable_loading = False
+    ts.timetable_progress_users.clear()
+    ts.timetable_progress = {'current': 0, 'total': 0, 'start_time': None}
+    try:
+        yield ts
+    finally:
+        ts.all_groups_timetable_cache = backup[0]
+        ts.timetable_loading = backup[1]
+        ts.timetable_progress_users.clear()
+        ts.timetable_progress_users.update(backup[2])
+        ts.timetable_progress = backup[3]
+
+
+@pytest.fixture
+def reset_message_states():
+    """Изолирует messages_service.message_states между тестами."""
+    import messages_service
+
+    backup = dict(messages_service.message_states)
+    messages_service.message_states.clear()
+    try:
+        yield messages_service.message_states
+    finally:
+        messages_service.message_states.clear()
+        messages_service.message_states.update(backup)

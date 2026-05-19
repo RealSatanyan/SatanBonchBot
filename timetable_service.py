@@ -196,7 +196,7 @@ async def get_all_groups_timetable(force_reload: bool = False, user_id: int = No
     Получает расписание всех групп с кэшированием и отслеживанием прогресса.
     Сначала пытается загрузить из JSON файла, если он существует и не требуется принудительная перезагрузка.
     """
-    global all_groups_timetable_cache, timetable_loading, timetable_progress_users
+    global all_groups_timetable_cache, timetable_loading, timetable_progress_users, timetable_progress
 
     if all_groups_timetable_cache is None or force_reload:
         # Если не требуется принудительная перезагрузка, пытаемся загрузить из JSON
