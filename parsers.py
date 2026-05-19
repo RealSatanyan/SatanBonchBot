@@ -208,11 +208,12 @@ def _clean_teacher_full(title: str | None) -> str | None:
     return '; '.join(names) if names else None
 
 
-def _split_room_building(aud_text: str | None) -> tuple:
+def split_room_building(aud_text: str | None) -> tuple:
     """
-    Делит текст span.aud на номер аудитории и корпус.
+    Делит строку «аудитория; корпус» на номер аудитории и корпус.
 
-    На cabinet.sut.ru span.aud имеет вид «131; Б22/1» (аудитория; корпус).
+    На cabinet.sut.ru span.aud (и поле location личного расписания) имеет вид
+    «131; Б22/1» (аудитория; корпус).
     '131; Б22/1' -> ('131', 'Б22/1'); 'ДОТ' -> ('ДОТ', None); '' -> ('', None).
     """
     if not aud_text:
@@ -287,7 +288,7 @@ def parse_timetable_table(html: str, group_name: str, first_day: datetime):
                 room_element = pair_div.find('span', class_='aud')
                 room_raw = room_element.get_text(' ', strip=True) if room_element else None
                 # span.aud содержит «<аудитория>; <корпус>» — разделяем на два поля.
-                room, building = _split_room_building(room_raw)
+                room, building = split_room_building(room_raw)
 
                 weeks_element = pair_div.find('span', class_='weeks')
                 week_number_str = (

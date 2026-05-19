@@ -1,11 +1,15 @@
 """Текстовое форматирование расписания и фильтры по дате.
 
-Лист графа зависимостей: только stdlib + pytz. Не импортирует проектные модули.
+Зависит только от чистых модулей (stdlib, pytz, parsers) — без сетевого кода
+и импорт-тайм side-effects.
 """
 
+import re
 from datetime import datetime, timedelta
 
 import pytz
+
+from parsers import split_room_building
 
 
 def filter_group_lessons_by_date(timetable, date_str: str) -> list:
@@ -34,17 +38,53 @@ def _moscow_today():
     return datetime.now(pytz.timezone("Europe/Moscow")).date()
 
 
-def format_timetable(timetable, title: str = "Ваше расписание") -> str:
+def _lesson_key_digits(value) -> str:
+    """Нормализует дату/время к цифрам — для устойчивого сопоставления занятий."""
+    return re.sub(r'\D', '', value or '')
+
+
+def _build_full_name_index(group_timetable) -> dict:
+    """
+    Индекс полных ФИО из расписания группы: {(дата, время, предмет): ФИО}.
+
+    Личная страница ЛК (raspisanie.php) полных ФИО не содержит — их берём из
+    расписания группы (cabinet.sut.ru). Ключ устойчив к разнице разделителей
+    в дате/времени между двумя источниками.
+    """
+    index = {}
+    if not isinstance(group_timetable, list):
+        return index
+    for lesson in group_timetable:
+        if not isinstance(lesson, dict):
+            continue
+        full_name = lesson.get('ФИО преподавателя (полное)')
+        if not full_name:
+            continue
+        key = (
+            _lesson_key_digits(lesson.get('Число')),
+            _lesson_key_digits(lesson.get('Время занятия')),
+            (lesson.get('Предмет') or '').strip(),
+        )
+        index[key] = full_name
+    return index
+
+
+def format_timetable(timetable, title: str = "Ваше расписание", group_timetable=None) -> str:
     """
     Форматирует список занятий в читаемый текст.
-    :param timetable: Список занятий.
+    :param timetable: Список занятий (объекты личного расписания ЛК).
     :param title: Заголовок расписания.
+    :param group_timetable: Расписание группы пользователя (список словарей)
+        для обогащения полным ФИО преподавателя; None — без обогащения.
     :return: Отформатированная строка с расписанием.
     """
     if not timetable:
         return f"📅 {title}\n\nЗанятий не найдено 🎉"
 
     formatted_timetable = f"📅 {title}:\n\n"
+
+    # Индекс полных ФИО из расписания группы (личная страница ЛК их не содержит).
+    full_name_index = _build_full_name_index(group_timetable)
 
     # Группируем занятия по дням
     days = {}
@@ -60,11 +100,21 @@ def format_timetable(timetable, title: str = "Ваше расписание") ->
     for date, lessons in sorted_days:
         formatted_timetable += f"----------------------\n📌 *{date} ({lessons[0].day})*\n"
         for lesson in lessons:
+            key = (
+                _lesson_key_digits(lesson.date),
+                _lesson_key_digits(lesson.time),
+                (lesson.subject or '').strip(),
+            )
+            teacher = full_name_index.get(key) or lesson.teacher
+            room, building = split_room_building(lesson.location)
+            room_line = f"🏫 {room}"
+            if building:
+                room_line += f" · корпус {building}"
             formatted_timetable += (
                 f"⏰ *{lesson.time}* \n"
                 f"📚 {lesson.subject} \n"
-                f"🎓 {lesson.teacher} \n"
-                f"🏫 {lesson.location} \n"
+                f"🎓 {teacher} \n"
+                f"{room_line} \n"
                 f"🔹 Тип: {lesson.lesson_type}\n\n"
             )
 

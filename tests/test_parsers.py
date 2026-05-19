@@ -238,16 +238,16 @@ def test_clean_teacher_full_empty_returns_none():
 
 
 def test_split_room_building_splits_room_and_building():
-    assert parsers._split_room_building("131; Б22/1") == ("131", "Б22/1")
+    assert parsers.split_room_building("131; Б22/1") == ("131", "Б22/1")
 
 
 def test_split_room_building_no_building():
-    assert parsers._split_room_building("ДОТ") == ("ДОТ", None)
+    assert parsers.split_room_building("ДОТ") == ("ДОТ", None)
 
 
 def test_split_room_building_empty():
-    assert parsers._split_room_building("") == ("", None)
-    assert parsers._split_room_building(None) == (None, None)
+    assert parsers.split_room_building("") == ("", None)
+    assert parsers.split_room_building(None) == (None, None)
 
 
 # --- parse_message_rows ------------------------------------------------------

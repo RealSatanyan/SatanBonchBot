@@ -16,8 +16,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile
 
 from keyboards import login_prompt_kb, get_week_navigation_buttons
-from db import is_registered
+from db import is_registered, get_user_group
 import lk_client
+import timetable_service
 from formatting import (
     format_timetable,
     filter_personal_lessons_by_date,
@@ -28,6 +29,21 @@ from rendering import generate_timetable_image
 from login_service import auto_login_user
 
 router = Router()
+
+
+def _user_group_timetable(user_id: int):
+    """
+    Расписание группы пользователя из кэша — для обогащения личного
+    расписания полным ФИО преподавателя (личная страница ЛК их не содержит).
+    Возвращает список занятий группы либо None.
+    """
+    group = get_user_group(user_id)
+    if not group:
+        return None
+    cache = timetable_service.all_groups_timetable_cache
+    if not cache:
+        return None
+    return cache.get(group)
 
 
 @router.callback_query(F.data.startswith("image_week_"))
@@ -86,7 +102,9 @@ async def process_week_navigation(callback_query: CallbackQuery):
         timetable = await lk_client.apis[user_id].get_timetable(week_offset=week_offset)
 
         # Форматируем расписание
-        formatted_timetable = format_timetable(timetable)
+        formatted_timetable = format_timetable(
+            timetable, group_timetable=_user_group_timetable(user_id)
+        )
 
         # Обновляем инлайн-кнопки
         reply_markup = get_week_navigation_buttons(week_offset=week_offset)
@@ -121,7 +139,10 @@ async def process_my_day(callback_query: CallbackQuery):
         title = f"{label} ({target.strftime('%d.%m')})"
 
         await callback_query.message.edit_text(
-            format_timetable(day_lessons, title=title),
+            format_timetable(
+                day_lessons, title=title,
+                group_timetable=_user_group_timetable(user_id),
+            ),
             parse_mode="Markdown",
             reply_markup=get_week_navigation_buttons(week_offset=0),
         )
@@ -146,7 +167,9 @@ async def cmd_timetable(message: types.Message, uid: int = None):
         timetable = await lk_client.apis[user_id].get_timetable(week_offset=0)
 
         # Форматируем расписание
-        formatted_timetable = format_timetable(timetable)
+        formatted_timetable = format_timetable(
+            timetable, group_timetable=_user_group_timetable(user_id)
+        )
 
         # Добавляем инлайн-кнопки
         reply_markup = get_week_navigation_buttons(week_offset=0)
