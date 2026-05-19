@@ -9,8 +9,10 @@ start_recipient_pick. Поведение хэндлеров не менялос�
 """
 
 import html
+import os
 import re
 import logging
+import tempfile
 import time as time_module
 
 from aiogram import Router, F, types
@@ -24,10 +26,17 @@ from keyboards import (
     cancel_kb,
     main_menu_kb,
     title_kb,
+    file_skip_kb,
     recipients_page_kb,
 )
 from db import is_registered
-from lk_client import get_message_api, lk_search_recipients, lk_send_message
+from lk_client import (
+    get_message_api,
+    lk_search_recipients,
+    lk_send_message,
+    lk_upload_file,
+    LK_MAX_FILE_SIZE_MB,
+)
 import messages_service
 from messages_service import (
     MESSAGES_CACHE_TTL_SEC,
@@ -652,34 +661,146 @@ async def fsm_write_text(message: types.Message, state: FSMContext):
     if not text:
         await message.answer("Текст пустой. Введи текст сообщения:", reply_markup=cancel_kb())
         return
+    # Текст принят — предлагаем прикрепить файл (шаг write_file) либо отправить без него.
+    await state.update_data(text=text)
+    await state.set_state(UIStates.write_file)
+    await message.answer(
+        "Текст принят. Прикрепи файл (документ или фото) одним сообщением "
+        "или отправь сообщение без файла:",
+        reply_markup=file_skip_kb(),
+    )
+
+
+async def _send_lk_message_from_state(
+    target_message: types.Message,
+    user_id: int,
+    state: FSMContext,
+    idinfo: int = 0,
+    uploaded_name: str = None,
+):
+    """
+    Завершает диалог «Написать»: достаёт получателя/тему/текст из FSM-данных
+    и отправляет сообщение в ЛК. idinfo>0 — к сообщению прикреплён файл.
+    """
     data = await state.get_data()
     recipient_id = data.get("recipient_id")
     recipient_label = data.get("recipient_label") or (f"id={recipient_id}" if recipient_id else "—")
     title = data.get("title", "")
+    text = data.get("text", "")
     await state.clear()
     if recipient_id is None:
-        await message.answer(
+        await target_message.answer(
             "Получатель не выбран. Начни заново: ✉️ Сообщения → Написать.",
             reply_markup=main_menu_kb(),
         )
         return
-    user_id = message.from_user.id
     message_api = await get_message_api(user_id)
     if not message_api:
-        await message.answer(
+        await target_message.answer(
             "❌ Не удалось войти в ЛК. Попробуй войти заново.",
             reply_markup=login_prompt_kb(),
         )
         return
-    status = await message.answer(f"⏳ Отправляю сообщение: {recipient_label}...")
+    status = await target_message.answer(f"⏳ Отправляю сообщение: {recipient_label}...")
     ok = await lk_send_message(
         message_api=message_api, recipient_id=int(recipient_id),
-        title=title, message_text=text, idinfo=0,
+        title=title, message_text=text, idinfo=idinfo,
     )
+    attach_note = f"\n📎 Вложение: {uploaded_name}" if (ok and idinfo and uploaded_name) else ""
     await status.edit_text(
-        f"✅ Сообщение отправлено: {recipient_label}" if ok
+        f"✅ Сообщение отправлено: {recipient_label}{attach_note}" if ok
         else f"❌ Не удалось отправить сообщение: {recipient_label}"
     )
     if ok:
         # Список сообщений мог измениться — сбрасываем тёплый кэш.
         _invalidate_messages_cache(user_id)
+
+
+@router.message(UIStates.write_file, F.document | F.photo)
+async def fsm_write_file_attach(message: types.Message, state: FSMContext):
+    """Шаг write_file: пользователь прислал документ/фото — грузим его в ЛК."""
+    user_id = message.from_user.id
+
+    # Определяем файл и его размер ДО скачивания — чтобы не качать заведомо большое.
+    if message.document:
+        file_obj = message.document
+        file_size = message.document.file_size or 0
+        file_name = message.document.file_name or "file"
+    else:
+        file_obj = message.photo[-1]  # последний элемент — максимальное разрешение
+        file_size = message.photo[-1].file_size or 0
+        file_name = "photo.jpg"
+
+    max_bytes = LK_MAX_FILE_SIZE_MB * 1024 * 1024
+    if file_size > max_bytes:
+        await message.answer(
+            f"❌ Файл больше {LK_MAX_FILE_SIZE_MB} МБ — ЛК его не примет.\n"
+            "Прикрепи файл поменьше или отправь сообщение без файла:",
+            reply_markup=file_skip_kb(),
+        )
+        return
+
+    message_api = await get_message_api(user_id)
+    if not message_api:
+        await state.clear()
+        await message.answer(
+            "❌ Не удалось войти в ЛК. Попробуй войти заново.",
+            reply_markup=login_prompt_kb(),
+        )
+        return
+
+    status = await message.answer("⏳ Загружаю файл в ЛК...")
+    idinfo = 0
+    tmp_dir = tempfile.mkdtemp(prefix="lk_upload_")
+    tmp_path = os.path.join(tmp_dir, os.path.basename(file_name) or "file")
+    try:
+        await message.bot.download(file_obj, destination=tmp_path)
+        idinfo = await lk_upload_file(message_api, tmp_path)
+    except Exception:
+        logging.error("Ошибка при скачивании/загрузке вложения для %s", user_id, exc_info=True)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        try:
+            os.rmdir(tmp_dir)
+        except OSError:
+            pass
+
+    if not idinfo:
+        await status.edit_text(
+            "❌ Не удалось загрузить файл в ЛК.\n"
+            "Прикрепи другой файл или отправь сообщение без файла:",
+            reply_markup=file_skip_kb(),
+        )
+        return
+
+    try:
+        await status.delete()
+    except Exception:
+        pass
+    await _send_lk_message_from_state(message, user_id, state, idinfo=idinfo, uploaded_name=file_name)
+
+
+@router.message(UIStates.write_file)
+async def fsm_write_file_invalid(message: types.Message, state: FSMContext):
+    """Шаг write_file: пришёл не файл — подсказываем варианты."""
+    await message.answer(
+        "Это не файл. Прикрепи документ или фото одним сообщением "
+        "или отправь сообщение без файла:",
+        reply_markup=file_skip_kb(),
+    )
+
+
+@router.callback_query(F.data == "mw:nofile")
+async def cb_write_nofile(callback_query: CallbackQuery, state: FSMContext):
+    """Шаг write_file: «Отправить без файла» — шлём сообщение без вложения."""
+    await callback_query.answer()
+    try:
+        await callback_query.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await _send_lk_message_from_state(
+        callback_query.message, callback_query.from_user.id, state, idinfo=0,
+    )

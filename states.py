@@ -15,3 +15,4 @@ class UIStates(StatesGroup):
     write_pick = State()
     write_title = State()
     write_text = State()
+    write_file = State()

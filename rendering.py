@@ -383,8 +383,10 @@ def generate_timetable_image_from_dict(timetable: list, title: str = "Распи
     def draw_lesson_entry(draw, lesson, x, y, max_width, text_font, emoji_font):
         time_str = lesson.get('Время занятия', 'Не указано')
         subject = lesson.get('Предмет', 'Не указано')
-        teacher = lesson.get('ФИО преподавателя', 'Не указано')
+        # Полное ФИО, если доступно (задача B.1), иначе — краткое.
+        teacher = lesson.get('ФИО преподавателя (полное)') or lesson.get('ФИО преподавателя', 'Не указано')
         room = lesson.get('Номер кабинета', 'Не указано')
+        building = lesson.get('Корпус')
 
         # Форматируем время: заменяем ":" на "."
         time_formatted = time_str.replace(':', '.')
@@ -436,11 +438,16 @@ def generate_timetable_image_from_dict(timetable: list, title: str = "Распи
         # Преподаватель, кабинет и тип предмета с эмодзи
         info_y = subject_y + 22
         info_parts = []
+        # Слитые группы-потоки (расписание преподавателя/аудитории) — см. B.3.
+        groups = lesson.get('Группы')
+        if groups:
+            info_parts.append(f"👥 {', '.join(groups)}")
         if teacher and teacher != 'Не указано':
-            teacher_display = teacher[:18] + "..." if len(teacher) > 18 else teacher
+            teacher_display = teacher[:24] + "..." if len(teacher) > 24 else teacher
             info_parts.append(f"👤 {teacher_display}")  # Используем простой эмодзи вместо составного
         if room and room != 'Не указано':
-            info_parts.append(f"🏫 {room}")
+            room_label = f"{room} · {building}" if building else room
+            info_parts.append(f"🏫 {room_label}")
 
         # Добавляем тип предмета
         lesson_type = lesson.get('Тип занятия', '')

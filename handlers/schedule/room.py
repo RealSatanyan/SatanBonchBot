@@ -22,7 +22,7 @@ from keyboards import cancel_kb, get_classroom_week_navigation_buttons
 from lk_client import TimetableBonchAPI
 import timetable_service
 from timetable_service import get_all_groups_timetable
-from formatting import format_timetable_dict
+from formatting import format_timetable_dict, merge_lessons_by_groups
 
 router = Router()
 
@@ -61,7 +61,9 @@ async def process_classroom_week_navigation(callback_query: CallbackQuery):
             return
 
         # Фильтруем по кабинету
-        classroom_timetable = TimetableBonchAPI.classroom_timetable(timetable_service.all_groups_timetable_cache, classroom_number)
+        classroom_timetable = merge_lessons_by_groups(
+            TimetableBonchAPI.classroom_timetable(timetable_service.all_groups_timetable_cache, classroom_number)
+        )
 
         if not classroom_timetable:
             await callback_query.answer(f"Не найдено занятий для кабинета: {classroom_number}", show_alert=True)
@@ -121,7 +123,9 @@ async def cmd_classroom_timetable(message: types.Message, override: str = None):
                     pass
 
         # Используем статический метод для фильтрации по кабинету
-        classroom_timetable = TimetableBonchAPI.classroom_timetable(all_timetable, classroom_number)
+        classroom_timetable = merge_lessons_by_groups(
+            TimetableBonchAPI.classroom_timetable(all_timetable, classroom_number)
+        )
 
         if not classroom_timetable:
             await message.answer(f"❌ Не найдено занятий для кабинета: {classroom_number}")

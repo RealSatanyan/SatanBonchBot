@@ -70,6 +70,54 @@ def format_timetable(timetable, title: str = "Ваше расписание") ->
 
     return formatted_timetable
 
+def merge_lessons_by_groups(lessons: list) -> list:
+    """
+    Сливает занятия-потоки в расписании преподавателя/аудитории.
+
+    Занятия, совпадающие по (неделя, день, дата, время, предмет, тип,
+    преподаватель, аудитория) и отличающиеся только группой, объединяются
+    в одну запись с полем 'Группы' — отсортированным списком названий групп.
+    Так лекция-поток для пяти групп даёт одну строку вместо пяти.
+
+    Занятие одной группы остаётся без изменений (поле 'Группа', без 'Группы').
+    Порядок занятий сохраняется по первому появлению.
+    """
+    merged = {}
+    order = []
+    for lesson in lessons:
+        if not isinstance(lesson, dict):
+            continue
+        key = (
+            lesson.get('Номер недели'),
+            lesson.get('Номер дня недели'),
+            lesson.get('Число'),
+            lesson.get('Время занятия'),
+            lesson.get('Предмет'),
+            lesson.get('Тип занятия'),
+            lesson.get('ФИО преподавателя'),
+            lesson.get('Номер кабинета'),
+            lesson.get('Корпус'),
+        )
+        if key not in merged:
+            entry = dict(lesson)
+            entry['_groups'] = []
+            merged[key] = entry
+            order.append(key)
+        entry = merged[key]
+        group = lesson.get('Группа', '')
+        if group and group not in entry['_groups']:
+            entry['_groups'].append(group)
+
+    result = []
+    for key in order:
+        entry = merged[key]
+        groups = entry.pop('_groups')
+        if len(groups) > 1:
+            entry['Группы'] = sorted(groups)
+        result.append(entry)
+    return result
+
+
 def format_timetable_dict(timetable: list, title: str = "Расписание", week_number: int = None) -> str:
     """
     Форматирует список занятий из словарей (формат TImetabels.py) в читаемый текст.
@@ -116,19 +164,27 @@ def format_timetable_dict(timetable: list, title: str = "Расписание", 
         for lesson in lessons_sorted:
             time_str = lesson.get('Время занятия', 'Не указано')
             subject = lesson.get('Предмет', 'Не указано')
-            teacher = lesson.get('ФИО преподавателя', 'Не указано')
+            # Полное ФИО, если доступно (задача B.1), иначе — краткое.
+            teacher = lesson.get('ФИО преподавателя (полное)') or lesson.get('ФИО преподавателя', 'Не указано')
             room = lesson.get('Номер кабинета', 'Не указано')
+            building = lesson.get('Корпус')
             lesson_type = lesson.get('Тип занятия', '')
             group = lesson.get('Группа', '')
+            groups = lesson.get('Группы')
 
             formatted_timetable += f"⏰ *{time_str}*\n"
             formatted_timetable += f"📚 {subject}\n"
-            if group:
+            if groups:
+                formatted_timetable += f"👥 Группы: {', '.join(groups)}\n"
+            elif group:
                 formatted_timetable += f"👥 Группа: {group}\n"
             if teacher and teacher != 'Не указано':
                 formatted_timetable += f"🎓 {teacher}\n"
             if room and room != 'Не указано':
-                formatted_timetable += f"🏫 {room}\n"
+                room_line = f"🏫 {room}"
+                if building:
+                    room_line += f" · корпус {building}"
+                formatted_timetable += room_line + "\n"
             if lesson_type:
                 formatted_timetable += f"🔹 Тип: {lesson_type}\n"
             formatted_timetable += "\n"
