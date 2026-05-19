@@ -1,18 +1,28 @@
-"""Тесты flow «✏️ Написать» с вложением файла (задача B.2).
+"""Тесты обработчиков сообщений ЛК (handlers/messages/).
 
-Сеть замокана: get_message_api / lk_upload_file / lk_send_message подменяются
-фейками. Telegram-загрузка файла замокана фейковым bot.download.
+Flow «✏️ Написать» с вложением файла (B.2), чтение входящих (C.2 №1–2),
+парсинг аргументов /send_lk (C.2 №3). Сеть замокана: get_message_api /
+lk_upload_file / lk_send_message / lk_search_recipients подменяются фейками.
 """
 import asyncio
 from types import SimpleNamespace
 
 import handlers.messages.compose as messages_mod
+import handlers.messages.inbox as inbox_mod
 from handlers.messages.compose import (
+    cmd_send_lk,
+    handle_lk_send_callback,
+    cb_msg_write,
+    fsm_write_recipient,
+    fsm_write_title,
+    cb_notitle,
+    cb_write_pick,
     fsm_write_text,
     fsm_write_file_attach,
     fsm_write_file_invalid,
     cb_write_nofile,
 )
+from handlers.messages.inbox import cmd_messages, handle_message_callback
 from states import UIStates
 from lk_client import LK_MAX_FILE_SIZE_MB
 
@@ -37,6 +47,7 @@ class FakeMessage:
         self.document = document
         self.photo = photo
         self.from_user = SimpleNamespace(id=user_id)
+        self.chat = SimpleNamespace(id=user_id)
         self.bot = FakeBot()
         self.answers = []
         self.edits = []
@@ -59,7 +70,8 @@ class FakeMessage:
 
 
 class FakeCallbackQuery:
-    def __init__(self, user_id=1):
+    def __init__(self, user_id=1, data=""):
+        self.data = data
         self.from_user = SimpleNamespace(id=user_id)
         self.message = FakeMessage(user_id=user_id)
         self.answers = []
@@ -199,3 +211,393 @@ def test_write_file_invalid_reprompts(reset_message_states):
     asyncio.run(fsm_write_file_invalid(msg, state))
 
     assert any("не файл" in a["text"].lower() for a in msg.answers)
+
+
+# --- C.2 №1: cmd_messages — тёплый кэш ---------------------------------------
+
+def test_cmd_messages_warm_cache_skips_lk_request(monkeypatch, reset_message_states):
+    """Свежий кэш — список показывается без перезапроса первой страницы из ЛК."""
+    import messages_service
+    from messages_service import _build_message_state
+
+    shown, api_calls = [], []
+
+    async def fake_show(user_id, chat_id, index):
+        shown.append((user_id, index))
+
+    async def fake_get_api(user_id):
+        api_calls.append(user_id)
+        return None
+
+    monkeypatch.setattr(inbox_mod, "show_message_list", fake_show)
+    monkeypatch.setattr(inbox_mod, "get_message_api", fake_get_api)
+    messages_service.message_states[1] = _build_message_state(
+        object(), {"messages": [{"id": "m1"}], "total_pages": 1}
+    )
+
+    asyncio.run(cmd_messages(FakeMessage(user_id=1)))
+
+    assert shown == [(1, 0)]
+    assert api_calls == []  # тёплый кэш — в ЛК не ходили
+
+
+def test_cmd_messages_stale_cache_refetches_first_page(monkeypatch, reset_message_states):
+    """Устаревший кэш — первая страница перезапрашивается из ЛК."""
+    import messages_service
+    from messages_service import _build_message_state
+
+    pages = []
+
+    class FakeApi:
+        async def get_messages_page(self, page):
+            pages.append(page)
+            return {"messages": [{"id": "m1"}], "total_pages": 1}
+
+    async def fake_show(user_id, chat_id, index):
+        pass
+
+    async def fake_get_api(user_id):
+        return FakeApi()
+
+    monkeypatch.setattr(inbox_mod, "show_message_list", fake_show)
+    monkeypatch.setattr(inbox_mod, "get_message_api", fake_get_api)
+    stale = _build_message_state(object(), {"messages": [{"id": "old"}], "total_pages": 1})
+    stale["fetched_at"] = None  # помечен устаревшим
+    messages_service.message_states[1] = stale
+
+    asyncio.run(cmd_messages(FakeMessage(user_id=1)))
+
+    assert pages == [1]  # перезапросили именно первую страницу
+
+
+# --- C.2 №2: handle_message_callback — навигация -----------------------------
+
+def test_message_navigation_prev_moves_back(monkeypatch, reset_message_states):
+    import messages_service
+
+    shown = []
+
+    async def fake_show(user_id, chat_id, index):
+        shown.append(index)
+
+    monkeypatch.setattr(inbox_mod, "show_message_list", fake_show)
+    messages_service.message_states[1] = {
+        "api": object(), "messages": [{"id": "m1"}, {"id": "m2"}],
+        "total_pages": 1, "loaded_pages": 1, "current_index": 1,
+    }
+
+    asyncio.run(handle_message_callback(FakeCallbackQuery(user_id=1, data="msg_prev_1")))
+
+    assert shown == [0]
+    assert messages_service.message_states[1]["current_index"] == 0
+
+
+def test_message_navigation_next_lazy_loads_next_page(monkeypatch, reset_message_states):
+    """Дошли до конца загруженного — следующая страница подгружается лениво."""
+    import messages_service
+
+    shown = []
+
+    class FakeApi:
+        async def get_messages_page(self, page):
+            return {"messages": [{"id": "m2"}], "total_pages": 2}
+
+    async def fake_show(user_id, chat_id, index):
+        shown.append(index)
+
+    monkeypatch.setattr(inbox_mod, "show_message_list", fake_show)
+    messages_service.message_states[1] = {
+        "api": FakeApi(), "messages": [{"id": "m1"}],
+        "total_pages": 2, "loaded_pages": 1, "current_index": 0,
+    }
+
+    asyncio.run(handle_message_callback(FakeCallbackQuery(user_id=1, data="msg_next_0")))
+
+    state = messages_service.message_states[1]
+    assert state["loaded_pages"] == 2
+    assert len(state["messages"]) == 2
+    assert shown == [1]
+
+
+# --- C.2 №3: cmd_send_lk — парсинг аргументов --------------------------------
+
+def test_send_lk_numeric_id_sends_directly(monkeypatch):
+    """Первое слово — число → отправка по ID без поиска получателя."""
+    send_calls = []
+
+    async def fake_get_api(uid):
+        return object()
+
+    async def fake_send(**kwargs):
+        send_calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(messages_mod, "get_message_api", fake_get_api)
+    monkeypatch.setattr(messages_mod, "lk_send_message", fake_send)
+
+    asyncio.run(cmd_send_lk(FakeMessage(text="/send_lk 113714 Привет бот", user_id=1)))
+
+    assert len(send_calls) == 1
+    assert send_calls[0]["recipient_id"] == 113714
+    assert send_calls[0]["message_text"] == "Привет бот"
+
+
+def test_send_lk_name_with_initials_searches_recipient(monkeypatch):
+    """«Фамилия И.О. + текст» → граница ФИО/текста после инициалов, идёт поиск."""
+    search_calls = []
+
+    async def fake_get_api(uid):
+        return object()
+
+    async def fake_search(api, query):
+        search_calls.append(query)
+        return []
+
+    monkeypatch.setattr(messages_mod, "get_message_api", fake_get_api)
+    monkeypatch.setattr(messages_mod, "lk_search_recipients", fake_search)
+
+    asyncio.run(cmd_send_lk(FakeMessage(text="/send_lk Платонов Д.И. Реально работает?", user_id=1)))
+
+    assert search_calls == ["Платонов Д.И."]
+
+
+def test_send_lk_without_args_shows_usage():
+    msg = FakeMessage(text="/send_lk", user_id=1)
+
+    asyncio.run(cmd_send_lk(msg))
+
+    assert any("Использование" in a["text"] for a in msg.answers)
+
+
+# --- C.2 №2 (доп.): открытие/обновление/возврат в handle_message_callback ----
+
+def test_message_open_renders_message(monkeypatch, reset_message_states):
+    import messages_service
+
+    class FakeApi:
+        async def get_message(self, message_id):
+            return {"name": "Тема письма", "annotation": "<p>тело письма</p>"}
+
+    async def fake_get_api(user_id):
+        return FakeApi()
+
+    monkeypatch.setattr(inbox_mod, "get_message_api", fake_get_api)
+    messages_service.message_states[1] = {
+        "messages": [{"id": "m1", "title": "Тема письма", "sender": "Деканат"}],
+    }
+
+    cb = FakeCallbackQuery(user_id=1, data="msg_open_m1")
+    asyncio.run(handle_message_callback(cb))
+
+    assert any("Тема письма" in a["text"] for a in cb.message.answers)
+
+
+def test_message_back_to_list_returns(monkeypatch, reset_message_states):
+    import messages_service
+
+    shown = []
+
+    async def fake_show(user_id, chat_id, index):
+        shown.append(index)
+
+    monkeypatch.setattr(inbox_mod, "show_message_list", fake_show)
+    messages_service.message_states[1] = {"messages": [{"id": "m1"}], "current_index": 0}
+
+    asyncio.run(handle_message_callback(FakeCallbackQuery(user_id=1, data="msg_back_to_list")))
+
+    assert shown == [0]
+
+
+def test_message_refresh_reloads_first_page(monkeypatch, reset_message_states):
+    import messages_service
+
+    class FakeApi:
+        async def get_messages_page(self, page):
+            return {"messages": [{"id": "m1"}], "total_pages": 1}
+
+    async def fake_get_api(user_id):
+        return FakeApi()
+
+    async def fake_show(user_id, chat_id, index):
+        pass
+
+    monkeypatch.setattr(inbox_mod, "get_message_api", fake_get_api)
+    monkeypatch.setattr(inbox_mod, "show_message_list", fake_show)
+
+    asyncio.run(handle_message_callback(FakeCallbackQuery(user_id=1, data="msg_refresh")))
+
+    assert 1 in messages_service.message_states
+
+
+def test_cmd_messages_without_api_prompts_login(monkeypatch, reset_message_states):
+    async def fake_get_api(user_id):
+        return None
+
+    monkeypatch.setattr(inbox_mod, "get_message_api", fake_get_api)
+    msg = FakeMessage(user_id=1)
+
+    asyncio.run(cmd_messages(msg))
+
+    assert any("login" in a["text"].lower() for a in msg.answers)
+
+
+def test_cmd_messages_empty_inbox_reports_no_messages(monkeypatch, reset_message_states):
+    class FakeApi:
+        cookies = {"sid": "x"}
+
+        async def get_messages_page(self, page):
+            return {"messages": [], "total_pages": 1}
+
+    async def fake_get_api(user_id):
+        return FakeApi()
+
+    monkeypatch.setattr(inbox_mod, "get_message_api", fake_get_api)
+    msg = FakeMessage(user_id=1)
+
+    asyncio.run(cmd_messages(msg))
+
+    status = msg.replies[0]
+    assert any("нет входящих" in e["text"].lower() for e in status.edits)
+
+
+# --- C.2 №3 (доп.): cmd_send_lk — ветки поиска и отправки --------------------
+
+def test_send_lk_id_send_failure_reports_error(monkeypatch):
+    async def fake_get_api(uid):
+        return object()
+
+    async def fake_send(**kwargs):
+        return False
+
+    monkeypatch.setattr(messages_mod, "get_message_api", fake_get_api)
+    monkeypatch.setattr(messages_mod, "lk_send_message", fake_send)
+    msg = FakeMessage(text="/send_lk 100 текст", user_id=1)
+
+    asyncio.run(cmd_send_lk(msg))
+
+    status = msg.replies[0]
+    assert any("Не удалось отправить" in e["text"] for e in status.edits)
+
+
+def test_send_lk_single_search_result_sends(monkeypatch):
+    async def fake_get_api(uid):
+        return object()
+
+    async def fake_search(api, query):
+        return [{"id": 55, "label": "Иванов И.И."}]
+
+    sent = []
+
+    async def fake_send(**kwargs):
+        sent.append(kwargs)
+        return True
+
+    monkeypatch.setattr(messages_mod, "get_message_api", fake_get_api)
+    monkeypatch.setattr(messages_mod, "lk_search_recipients", fake_search)
+    monkeypatch.setattr(messages_mod, "lk_send_message", fake_send)
+    msg = FakeMessage(text="/send_lk Иванов И.И. привет", user_id=1)
+
+    asyncio.run(cmd_send_lk(msg))
+
+    assert sent and sent[0]["recipient_id"] == 55
+
+
+def test_send_lk_multiple_results_offers_choice(monkeypatch):
+    import messages_service
+    messages_service.pending_lk_messages.clear()
+
+    async def fake_get_api(uid):
+        return object()
+
+    async def fake_search(api, query):
+        return [{"id": 1, "label": "Иванов И.И."}, {"id": 2, "label": "Иванов И.П."}]
+
+    monkeypatch.setattr(messages_mod, "get_message_api", fake_get_api)
+    monkeypatch.setattr(messages_mod, "lk_search_recipients", fake_search)
+    msg = FakeMessage(text="/send_lk Иванов привет всем", user_id=1)
+
+    asyncio.run(cmd_send_lk(msg))
+
+    assert messages_service.pending_lk_messages  # сообщения отложены до выбора
+    messages_service.pending_lk_messages.clear()
+
+
+def test_lk_send_callback_sends_pending_message(monkeypatch):
+    import messages_service
+    messages_service.pending_lk_messages[(1, 77)] = {"text": "тело", "title": "", "label": "Х"}
+
+    async def fake_get_api(uid):
+        return object()
+
+    sent = []
+
+    async def fake_send(**kwargs):
+        sent.append(kwargs)
+        return True
+
+    monkeypatch.setattr(messages_mod, "get_message_api", fake_get_api)
+    monkeypatch.setattr(messages_mod, "lk_send_message", fake_send)
+
+    asyncio.run(handle_lk_send_callback(FakeCallbackQuery(user_id=1, data="lk_send_77")))
+
+    assert sent and sent[0]["recipient_id"] == 77
+
+
+# --- C.2: остальные шаги диалога «Написать» ----------------------------------
+
+def test_cb_msg_write_unregistered_prompts_login(temp_db):
+    cb = FakeCallbackQuery(user_id=1)
+
+    asyncio.run(cb_msg_write(cb, FakeState()))
+
+    assert any("войди в ЛК" in a["text"] for a in cb.message.answers)
+
+
+def test_cb_msg_write_registered_starts_recipient_step(temp_db):
+    temp_db.execute("INSERT INTO users (user_id, email, password) VALUES (1, 'e', 'p')")
+    temp_db.commit()
+    state = FakeState()
+
+    asyncio.run(cb_msg_write(FakeCallbackQuery(user_id=1), state))
+
+    assert state._state == UIStates.write_recipient
+
+
+def test_fsm_write_recipient_numeric_id_goes_to_title(monkeypatch):
+    async def fake_get_api(uid):
+        return object()
+
+    monkeypatch.setattr(messages_mod, "get_message_api", fake_get_api)
+    state = FakeState()
+
+    asyncio.run(fsm_write_recipient(FakeMessage(text="12345", user_id=1), state))
+
+    assert state._state == UIStates.write_title
+    assert state._data["recipient_id"] == 12345
+
+
+def test_fsm_write_title_advances_to_text():
+    state = FakeState(data={"recipient_id": 5})
+
+    asyncio.run(fsm_write_title(FakeMessage(text="Тема", user_id=1), state))
+
+    assert state._state == UIStates.write_text
+    assert state._data["title"] == "Тема"
+
+
+def test_cb_notitle_advances_to_text_without_title():
+    state = FakeState(data={"recipient_id": 5})
+
+    asyncio.run(cb_notitle(FakeCallbackQuery(user_id=1), state))
+
+    assert state._state == UIStates.write_text
+    assert state._data["title"] == ""
+
+
+def test_cb_write_pick_selects_recipient_from_results():
+    state = FakeState(data={"results": [{"id": 9, "label": "Иванов И.И."}]})
+
+    asyncio.run(cb_write_pick(FakeCallbackQuery(user_id=1, data="mw:pick:0"), state))
+
+    assert state._data["recipient_id"] == 9
+    assert state._state == UIStates.write_title
