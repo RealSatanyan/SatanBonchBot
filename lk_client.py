@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import time as time_module
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -84,7 +85,10 @@ _LK_RETRY_BACKOFF_SEC = 1.5
 _LK_RETRIES = 3
 
 
-async def _lk_fetch(session, method: str, url: str, **kwargs) -> tuple[int, str]:
+async def _lk_fetch(
+    session, method: str, url: str, *, idempotent: bool = True,
+    read_body: bool = True, **kwargs
+) -> tuple[int, str]:
     """Выполняет HTTP-запрос в ЛК через переданную session с ретраями.
 
     Возвращает (статус, тело). Тело читается устойчиво — read() + decode с
@@ -92,6 +96,18 @@ async def _lk_fetch(session, method: str, url: str, **kwargs) -> tuple[int, str]
     не падал в UnicodeDecodeError. Сетевые сбои, таймауты и ответы 5xx
     повторяются с экспоненциальным бэкоффом: раньше первая же ошибка сети
     роняла вход / автоотметку / напоминание — теперь запрос повторяется.
+
+    ``idempotent`` — для запросов, которые безопасно повторять (GET, поиск,
+    вход). Для НЕидемпотентных (отправка сообщения: повтор после успешного
+    POST создаст дубль) передаётся ``idempotent=False`` — тогда повторяются
+    только заведомо «доотправочные» сбои: соединение не установлено, запрос
+    не ушёл (``aiohttp.ClientConnectorError``); 5xx и неоднозначные сбои
+    после отправки не ретраятся, ошибка пробрасывается вызывающему.
+
+    ``read_body=False`` — когда нужен только статус (этапы логина: открытие
+    кабинета, ?login=no/yes). Тело тогда НЕ вычитывается: страница ЛК после
+    входа большая/отдаётся медленно, и `response.read()` на ней может висеть
+    до таймаута — а тело там не нужно. Возвращается пустая строка.
 
     proxy=None, заголовки, таймаут и cookie_jar берутся из переданной session;
     семафор ЛК (get_lk_semaphore) остаётся за вызывающим кодом.
@@ -102,16 +118,20 @@ async def _lk_fetch(session, method: str, url: str, **kwargs) -> tuple[int, str]
         try:
             async with request(url, proxy=None, **kwargs) as response:
                 status = response.status
-                raw = await response.read()
-                text = raw.decode("utf-8", errors="replace")
+                if read_body:
+                    raw = await response.read()
+                    text = raw.decode("utf-8", errors="replace")
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+            pre_send = isinstance(e, aiohttp.ClientConnectorError)
+            if not idempotent and not pre_send:
+                raise
             if attempt >= _LK_RETRIES - 1:
                 raise
             logging.warning("Сбой запроса в ЛК (%s) — повтор (попытка %s): %s",
                              url, attempt + 1, e)
             await asyncio.sleep(_LK_RETRY_BACKOFF_SEC * (2 ** attempt))
             continue
-        if status >= 500 and attempt < _LK_RETRIES - 1:
+        if status >= 500 and idempotent and attempt < _LK_RETRIES - 1:
             logging.warning("ЛК ответил %s на %s — повтор (попытка %s)",
                             status, url, attempt + 1)
             await asyncio.sleep(_LK_RETRY_BACKOFF_SEC * (2 ** attempt))
@@ -160,7 +180,11 @@ class DebuggableBonchAPI(BonchAPI):
         Переопределяем метод login для использования HTTPS вместо HTTP.
         Исправляет проблему "The plain HTTP request was sent to HTTPS port".
         """
-        AUTH = f'https://lk.sut.ru/cabinet/lib/autentificationok.php?users={email}&parole={password}'
+        # users/parole идут в query-строку — percent-кодируем, иначе спецсимвол
+        # в пароле (`&`, `#`, `%`, пробел) молча исказит значение (A.2).
+        email_q = urllib.parse.quote(email, safe='')
+        password_q = urllib.parse.quote(password, safe='')
+        AUTH = f'https://lk.sut.ru/cabinet/lib/autentificationok.php?users={email_q}&parole={password_q}'
         CABINET = 'https://lk.sut.ru/cabinet/'
 
         headers = {
@@ -184,14 +208,17 @@ class DebuggableBonchAPI(BonchAPI):
                 ) as session:
                     # Инициализируем сессию (получаем куки). Каждый запрос —
                     # через _lk_fetch: ретраи при сетевом сбое/5xx, устойчивое чтение.
-                    status, body = await _lk_fetch(session, "GET", CABINET)
+                    # На этапах логина нужен только статус (куки берутся из
+                    # заголовков ответа) — тело не вычитываем (read_body=False),
+                    # иначе чтение большой страницы кабинета может висеть.
+                    status, body = await _lk_fetch(session, "GET", CABINET, read_body=False)
                     if status >= 400:
                         logging.error("HTTP %s при открытии CABINET для %s. Тело: %s",
                                       status, email, body[:500])
                         return False
 
                     # Некоторым конфигурациям lk нужен ?login=no, оставляем как доп. шаг
-                    status, body = await _lk_fetch(session, "GET", f"{CABINET}?login=no")
+                    status, body = await _lk_fetch(session, "GET", f"{CABINET}?login=no", read_body=False)
                     if status >= 400:
                         logging.error("HTTP %s при открытии CABINET?login=no для %s. Тело: %s",
                                       status, email, body[:500])
@@ -206,7 +233,7 @@ class DebuggableBonchAPI(BonchAPI):
                     # Обрезаем пробелы и переносы строк, так как сервер может возвращать '\n1' вместо '1'
                     text_clean = (text or "").strip()
                     if text_clean == "1":
-                        status, body = await _lk_fetch(session, "GET", f"{CABINET}?login=yes")
+                        status, body = await _lk_fetch(session, "GET", f"{CABINET}?login=yes", read_body=False)
                         if status >= 400:
                             logging.error("HTTP %s при открытии CABINET?login=yes для %s. Тело: %s",
                                           status, email, body[:500])
@@ -541,9 +568,14 @@ class DebuggableBonchAPI(BonchAPI):
                     except Exception as e:
                         logging.debug("Инициализация кабинета пропущена: %s", e)
 
-                async with session.get(page_url, cookies=self.cookies, headers=headers) as response:
-                    response.raise_for_status()
-                    text = await response.text()
+                # Запрос страницы — через _lk_fetch: разовый сетевой сбой
+                # повторяется, а не превращается в ложное «нет сообщений».
+                status, text = await _lk_fetch(
+                    session, "GET", page_url, cookies=self.cookies, headers=headers)
+
+            if status >= 400:
+                logging.warning("HTTP %s на странице %s сообщений", status, page)
+                return empty
 
             if 'ERRNO:' in text or 'Undefined index' in text:
                 logging.warning("Ошибка PHP на странице %s сообщений", page)
@@ -567,45 +599,50 @@ class DebuggableBonchAPI(BonchAPI):
                     'id': message_id,
                     'prosmotr': ''
                 }
-                async with session.post(URL, cookies=self.cookies, data=data) as response:
-                    response.raise_for_status()
-                    text = await response.text()
+                # Просмотр сообщения идемпотентен — _lk_fetch повторит запрос
+                # при разовом сетевом сбое.
+                status, text = await _lk_fetch(
+                    session, "POST", URL, cookies=self.cookies, data=data)
 
-                    # Парсим JSON ответ
-                    try:
-                        message_data = json.loads(text)
-                        # Декодируем HTML сущности в текстовых полях
-                        if 'annotation' in message_data:
-                            message_data['annotation'] = html.unescape(message_data['annotation'])
-                        if 'name' in message_data:
-                            message_data['name'] = html.unescape(message_data['name'])
-                        return message_data
-                    except json.JSONDecodeError:
-                        # Если это не JSON, пытаемся парсить HTML
-                        soup = BeautifulSoup(text, 'html.parser')
-                        message_data = {
-                            'id': message_id,
-                            'annotation': '',
-                            'name': '',
-                            'viddok': '',
-                            'otvet': 0,
-                            'idinfo': 0,
-                            'files': '',
-                            'sendto': message_id,
-                            'otpr': 0,
-                            'history': 0
-                        }
+            if status >= 400:
+                logging.warning("HTTP %s при получении сообщения ЛК %s", status, message_id)
+                return {}
 
-                        # Пытаемся извлечь данные из HTML
-                        name_elem = soup.find('input', {'name': 'name'}) or soup.find('h2') or soup.find('h3')
-                        if name_elem:
-                            message_data['name'] = name_elem.get('value', '') or name_elem.text.strip()
+            # Парсим JSON ответ
+            try:
+                message_data = json.loads(text)
+                # Декодируем HTML сущности в текстовых полях
+                if 'annotation' in message_data:
+                    message_data['annotation'] = html.unescape(message_data['annotation'])
+                if 'name' in message_data:
+                    message_data['name'] = html.unescape(message_data['name'])
+                return message_data
+            except json.JSONDecodeError:
+                # Если это не JSON, пытаемся парсить HTML
+                soup = BeautifulSoup(text, 'html.parser')
+                message_data = {
+                    'id': message_id,
+                    'annotation': '',
+                    'name': '',
+                    'viddok': '',
+                    'otvet': 0,
+                    'idinfo': 0,
+                    'files': '',
+                    'sendto': message_id,
+                    'otpr': 0,
+                    'history': 0
+                }
 
-                        annotation_elem = soup.find('textarea', {'name': 'annotation'}) or soup.find('div', class_='annotation')
-                        if annotation_elem:
-                            message_data['annotation'] = annotation_elem.get('value', '') or annotation_elem.text.strip()
+                # Пытаемся извлечь данные из HTML
+                name_elem = soup.find('input', {'name': 'name'}) or soup.find('h2') or soup.find('h3')
+                if name_elem:
+                    message_data['name'] = name_elem.get('value', '') or name_elem.text.strip()
 
-                        return message_data
+                annotation_elem = soup.find('textarea', {'name': 'annotation'}) or soup.find('div', class_='annotation')
+                if annotation_elem:
+                    message_data['annotation'] = annotation_elem.get('value', '') or annotation_elem.text.strip()
+
+                return message_data
         except Exception as e:
             logging.error('Ошибка при получении сообщения ЛК %s: %s', message_id, e, exc_info=True)
             return {}
@@ -724,10 +761,14 @@ async def lk_search_recipients(message_api: DebuggableBonchAPI, query: str):
 
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(40), trust_env=True, headers=BROWSER_HEADERS, connector=aiohttp.TCPConnector(force_close=True)) as session:
-            async with session.get(URL, params={"value": query}, cookies=message_api.cookies, proxy=None) as response:
-                status = response.status
-                response.raise_for_status()
-                html_text = await response.text()
+            # Поиск идемпотентен — _lk_fetch повторит запрос при разовом сбое,
+            # иначе пользователь видел бы ложное «получатель не найден».
+            status, html_text = await _lk_fetch(
+                session, "GET", URL, params={"value": query}, cookies=message_api.cookies)
+
+        if status >= 400:
+            logging.error("Поиск получателей %r: HTTP %s", query, status)
+            return []
 
         # Парсим строки вида "ФИО (id=12345)"
         results = parsers.parse_recipients(html_text)
@@ -751,6 +792,10 @@ async def lk_upload_file(message_api: DebuggableBonchAPI, filename: str, id: int
     Загрузка файла в ЛК с использованием cookies уже авторизованного API.
     Возвращает idinfo (>0) — идентификатор вложения для lk_send_message,
     либо 0 при ошибке.
+
+    Намеренно НЕ через _lk_fetch (A.1): тело идёт multipart/form-data через
+    aiohttp.FormData — объект одноразовый, а слепой повтор плодил бы дубль-файлы
+    в ЛК. При сбое — честная ошибка (0), пользователь повторяет осознанно.
     """
     URL = 'https://lk.sut.ru/cabinet/project/cabinet/forms/message_create_stud.php'
 
@@ -803,21 +848,28 @@ async def lk_send_message(
 
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(40), trust_env=True, headers=BROWSER_HEADERS, connector=aiohttp.TCPConnector(force_close=True)) as session:
-            async with session.post(URL, cookies=message_api.cookies, data=data, proxy=None) as response:
-                response.raise_for_status()
-                text = await response.text()
-                # Успех — пустой ответ; ЛК часто отдаёт его как пробелы/перевод строки.
-                if text.strip() == '':
-                    logging.info('Сообщение в ЛК успешно отправлено (adresat=%s)', recipient_id)
-                    return True
-                else:
-                    # Сервер иногда возвращает ошибку про link_url, но сообщение всё равно отправляется
-                    # Проверяем, является ли это только ошибкой про link_url
-                    if 'link_url' in text.lower() and 'undefined index' in text.lower():
-                        logging.warning('Сервер вернул предупреждение про link_url, но сообщение должно быть отправлено (adresat=%s)', recipient_id)
-                        return True
-                    logging.error('Ошибка при отправке сообщения в ЛК, ответ сервера: %r', text)
-                    return False
+            # idempotent=False: отправка не идемпотентна — слепой повтор после
+            # успешного POST создаст дубль. _lk_fetch ретраит только заведомо
+            # «доотправочные» сбои (соединение не установлено); неоднозначный
+            # сбой после отправки пробрасывается сюда → честная ошибка, без дубля.
+            status, text = await _lk_fetch(
+                session, "POST", URL, cookies=message_api.cookies, data=data,
+                idempotent=False)
+
+        if status >= 400:
+            logging.error('HTTP %s при отправке сообщения в ЛК (adresat=%s)', status, recipient_id)
+            return False
+        # Успех — пустой ответ; ЛК часто отдаёт его как пробелы/перевод строки.
+        if text.strip() == '':
+            logging.info('Сообщение в ЛК успешно отправлено (adresat=%s)', recipient_id)
+            return True
+        # Сервер иногда возвращает ошибку про link_url, но сообщение всё равно отправляется
+        # Проверяем, является ли это только ошибкой про link_url
+        if 'link_url' in text.lower() and 'undefined index' in text.lower():
+            logging.warning('Сервер вернул предупреждение про link_url, но сообщение должно быть отправлено (adresat=%s)', recipient_id)
+            return True
+        logging.error('Ошибка при отправке сообщения в ЛК, ответ сервера: %r', text)
+        return False
     except Exception as e:
         logging.error(f'Ошибка при отправке сообщения в ЛК: {type(e).__name__} {e}', exc_info=True)
         return False

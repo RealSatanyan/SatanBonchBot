@@ -30,6 +30,10 @@ from security import decrypt_password
 # модуль-квалифицированный доступ lesson_controller.controllers.
 controllers = {}  # Словарь для хранения контроллеров
 
+# Таймзона автоотметки. Вынесена на уровень модуля, чтобы цикл (start_lesson)
+# и извлечённый тик (_run_tick) пользовались одним объектом.
+MOSCOW_TZ = pytz.timezone('Europe/Moscow')
+
 
 class LessonController:
     def __init__(self, api, bot, user_id):
@@ -86,120 +90,146 @@ class LessonController:
                 return True
         return False
 
-    async def start_lesson(self):
+    async def _run_tick(self, now_dt: datetime) -> None:
+        """Решающая логика одного тика автоотметки: напоминание о паре +
+        клик/простой.
+
+        Вынесено из start_lesson (C.1) — поведение тика дословно сохранено,
+        цикл остаётся тонкой обёрткой. Тестируется явными сценариями.
+        ValueError из click_start_lesson (истёкшая сессия) пробрасывается
+        наверх — его обрабатывает цикл start_lesson.
+        """
+        now = now_dt.time()
+
+        # Напоминание о начале пары (один раз на пару). Включение и
+        # «за сколько минут» настраиваются пользователем в разделе «Профиль».
+        # Диапазон (N-1)..N нужен из-за периодической проверки раз в минуту.
+        notify_enabled, notify_minutes = get_notify_settings(self.user_id)
+        upcoming_idx = self._upcoming_lesson_interval_index(
+            now_dt,
+            min_minutes_before_start=max(1, notify_minutes - 1),
+            max_minutes_before_start=notify_minutes,
+        ) if notify_enabled else None
+        if upcoming_idx is not None:
+            lesson_key = f"{now_dt.strftime('%Y-%m-%d')}_upcoming_{upcoming_idx}"
+            if self._last_upcoming_lesson_key != lesson_key:
+                try:
+                    start_time, _end_time = self.lesson_intervals[upcoming_idx]
+                    start_dt = datetime.combine(now_dt.date(), start_time, tzinfo=now_dt.tzinfo)
+                    minutes_left = max(0, int((start_dt - now_dt).total_seconds() // 60))
+                    human_idx = upcoming_idx + 1
+
+                    details = await self.api.get_upcoming_start_lesson_details(
+                        now_dt=now_dt,
+                        target_pair_index=upcoming_idx,
+                        window_minutes=notify_minutes,
+                    )
+                    # Интервалы пар (LESSON_INTERVALS) — это просто сетка времени.
+                    # Уведомляем ТОЛЬКО если эта пара реально есть в расписании
+                    # на сегодня (details найдены). Нет пары -> молчим, ключ не
+                    # фиксируем, чтобы при сбое загрузки расписания был ретрай.
+                    if not details:
+                        logging.info(
+                            "Пара %s в %s не отправлена: нет в расписании на сегодня (user_id=%s)",
+                            human_idx,
+                            now_dt.strftime("%H:%M"),
+                            self.user_id,
+                        )
+                    else:
+                        room = details.get("room") or "—"
+                        subject = details.get("subject") or ""
+                        teacher = details.get("teacher") or ""
+                        subj_part = f"\n📚 {subject}" if subject else ""
+                        room_part = f"\n🚪 Аудитория: {room}" if room and room != "—" else "\n🚪 Аудитория: —"
+                        teacher_part = f"\n👨‍🏫 {teacher}" if teacher else ""
+                        msg = (
+                            f"🔔 Через {minutes_left} мин начнётся {human_idx}-я пара."
+                            f"{subj_part}{room_part}{teacher_part}"
+                        )
+
+                        await self.bot.send_message(self.user_id, msg)
+                        self._last_upcoming_lesson_key = lesson_key
+                        logging.info(
+                            "Отправлено напоминание о паре: user_id=%s, pair=%s, minutes_left=%s",
+                            self.user_id,
+                            human_idx,
+                            minutes_left,
+                        )
+                except Exception as notify_error:
+                    logging.warning(
+                        "Не удалось отправить напоминание о паре для user_id=%s: %s",
+                        self.user_id,
+                        notify_error,
+                        exc_info=True,
+                    )
+
+        if self.is_lesson_time(now):
+            # Если уведомление еще не отправлено, отправляем его
+            if not self.notified:
+                self.notified = True  # Устанавливаем флаг, что уведомление отправлено
+
+            # Пытаемся выполнить клик
+            logging.debug("Попытка кликнуть занятие для пользователя %s", self.user_id)
+            clicked = await self.api.click_start_lesson(self.user_id)
+            if clicked > 0:
+                logging.info("Клик выполнен. Отправлено запросов: %s", clicked)
+                # Оповещение в TG: ровно одно сообщение на одну пару
+                now_dt = datetime.now(MOSCOW_TZ)
+                interval_idx = self._current_lesson_interval_index(now_dt.time())
+                # Ключ пары: дата + номер интервала (если по какой-то причине idx=None,
+                # то fallback на дату+час, чтобы не спамить)
+                if interval_idx is None:
+                    lesson_key = now_dt.strftime("%Y-%m-%d_%H")
+                else:
+                    lesson_key = f"{now_dt.strftime('%Y-%m-%d')}_lesson_{interval_idx}"
+
+                if self._last_success_lesson_key != lesson_key:
+                    try:
+                        await self.bot.send_message(
+                            self.user_id,
+                            "✅ Автоотметка: отметка выполнена.",
+                        )
+                        self._last_success_lesson_key = lesson_key
+                    except Exception as mark_notify_error:
+                        logging.warning(
+                            "Не удалось отправить сообщение об автоотметке для user_id=%s: %s",
+                            self.user_id,
+                            mark_notify_error,
+                            exc_info=True,
+                        )
+            else:
+                logging.warning("Клик не выполнен: кандидатов для клика не найдено.")
+        else:
+            # Если время пар закончилось, сбрасываем флаг уведомления
+            self.notified = False
+            logging.info("Сейчас не время пар. Клик не выполнен.")
+
+    def start(self) -> bool:
+        """Запускает фоновый цикл автоотметки.
+
+        Идемпотентно (C.1): повторный вызов при уже работающем контроллере
+        не плодит вторую фоновую задачу и не теряет handle первой.
+        is_running выставляется синхронно — до создания задачи, поэтому
+        гонки между проверкой «уже запущена?» и стартом нет.
+
+        Возвращает True, если задача создана этим вызовом, иначе False.
+        """
         if self.is_running:
-            return "Автокликалка уже запущена."
-
+            return False
         self.is_running = True
-        moscow_tz = pytz.timezone('Europe/Moscow')
+        self.task = asyncio.create_task(self.start_lesson())
+        return True
 
+    async def start_lesson(self):
+        """Фоновый цикл автоотметки — тонкая обёртка над _run_tick (C.1).
+
+        is_running выставляется в start(); сюда входим уже с True. Цикл
+        отвечает только за тик раз в минуту и обработку ошибок (истёкшая
+        сессия -> переавторизация, прочие сбои -> debug-артефакты).
+        """
         while self.is_running:
             try:
-                now_dt = datetime.now(moscow_tz)
-                now = now_dt.time()
-
-                # Напоминание о начале пары (один раз на пару). Включение и
-                # «за сколько минут» настраиваются пользователем в разделе «Профиль».
-                # Диапазон (N-1)..N нужен из-за периодической проверки раз в минуту.
-                notify_enabled, notify_minutes = get_notify_settings(self.user_id)
-                upcoming_idx = self._upcoming_lesson_interval_index(
-                    now_dt,
-                    min_minutes_before_start=max(1, notify_minutes - 1),
-                    max_minutes_before_start=notify_minutes,
-                ) if notify_enabled else None
-                if upcoming_idx is not None:
-                    lesson_key = f"{now_dt.strftime('%Y-%m-%d')}_upcoming_{upcoming_idx}"
-                    if self._last_upcoming_lesson_key != lesson_key:
-                        try:
-                            start_time, _end_time = self.lesson_intervals[upcoming_idx]
-                            start_dt = datetime.combine(now_dt.date(), start_time, tzinfo=now_dt.tzinfo)
-                            minutes_left = max(0, int((start_dt - now_dt).total_seconds() // 60))
-                            human_idx = upcoming_idx + 1
-
-                            details = await self.api.get_upcoming_start_lesson_details(
-                                now_dt=now_dt,
-                                target_pair_index=upcoming_idx,
-                                window_minutes=notify_minutes,
-                            )
-                            # Интервалы пар (LESSON_INTERVALS) — это просто сетка времени.
-                            # Уведомляем ТОЛЬКО если эта пара реально есть в расписании
-                            # на сегодня (details найдены). Нет пары -> молчим, ключ не
-                            # фиксируем, чтобы при сбое загрузки расписания был ретрай.
-                            if not details:
-                                logging.info(
-                                    "Пара %s в %s не отправлена: нет в расписании на сегодня (user_id=%s)",
-                                    human_idx,
-                                    now_dt.strftime("%H:%M"),
-                                    self.user_id,
-                                )
-                            else:
-                                room = details.get("room") or "—"
-                                subject = details.get("subject") or ""
-                                teacher = details.get("teacher") or ""
-                                subj_part = f"\n📚 {subject}" if subject else ""
-                                room_part = f"\n🚪 Аудитория: {room}" if room and room != "—" else "\n🚪 Аудитория: —"
-                                teacher_part = f"\n👨‍🏫 {teacher}" if teacher else ""
-                                msg = (
-                                    f"🔔 Через {minutes_left} мин начнётся {human_idx}-я пара."
-                                    f"{subj_part}{room_part}{teacher_part}"
-                                )
-
-                                await self.bot.send_message(self.user_id, msg)
-                                self._last_upcoming_lesson_key = lesson_key
-                                logging.info(
-                                    "Отправлено напоминание о паре: user_id=%s, pair=%s, minutes_left=%s",
-                                    self.user_id,
-                                    human_idx,
-                                    minutes_left,
-                                )
-                        except Exception as notify_error:
-                            logging.warning(
-                                "Не удалось отправить напоминание о паре для user_id=%s: %s",
-                                self.user_id,
-                                notify_error,
-                                exc_info=True,
-                            )
-
-                if self.is_lesson_time(now):
-                    # Если уведомление еще не отправлено, отправляем его
-                    if not self.notified:
-                        self.notified = True  # Устанавливаем флаг, что уведомление отправлено
-
-                    # Пытаемся выполнить клик
-                    logging.debug("Попытка кликнуть занятие для пользователя %s", self.user_id)
-                    clicked = await self.api.click_start_lesson(self.user_id)
-                    if clicked > 0:
-                        logging.info("Клик выполнен. Отправлено запросов: %s", clicked)
-                        # Оповещение в TG: ровно одно сообщение на одну пару
-                        now_dt = datetime.now(moscow_tz)
-                        interval_idx = self._current_lesson_interval_index(now_dt.time())
-                        # Ключ пары: дата + номер интервала (если по какой-то причине idx=None,
-                        # то fallback на дату+час, чтобы не спамить)
-                        if interval_idx is None:
-                            lesson_key = now_dt.strftime("%Y-%m-%d_%H")
-                        else:
-                            lesson_key = f"{now_dt.strftime('%Y-%m-%d')}_lesson_{interval_idx}"
-
-                        if self._last_success_lesson_key != lesson_key:
-                            try:
-                                await self.bot.send_message(
-                                    self.user_id,
-                                    "✅ Автоотметка: отметка выполнена.",
-                                )
-                                self._last_success_lesson_key = lesson_key
-                            except Exception as mark_notify_error:
-                                logging.warning(
-                                    "Не удалось отправить сообщение об автоотметке для user_id=%s: %s",
-                                    self.user_id,
-                                    mark_notify_error,
-                                    exc_info=True,
-                                )
-                    else:
-                        logging.warning("Клик не выполнен: кандидатов для клика не найдено.")
-                else:
-                    # Если время пар закончилось, сбрасываем флаг уведомления
-                    self.notified = False
-                    logging.info("Сейчас не время пар. Клик не выполнен.")
+                await self._run_tick(datetime.now(MOSCOW_TZ))
                 await asyncio.sleep(60)  # Минутный тик для точного напоминания перед парой
             except ValueError as e:
                 # Обрабатываем ошибку истекшей сессии
@@ -245,9 +275,23 @@ class LessonController:
             return "Автокликалка уже остановлена."
 
         self.is_running = False
-        if self.task:
-            self.task.cancel()
-            logging.info(f'Пользователь {user_id} остановил автокликалку.')
+        task = self.task
+        self.task = None
+        if task is not None:
+            task.cancel()
+            # Дожидаемся фактического завершения задачи. Тик мог висеть в
+            # click_start_lesson (HTTP до ~40 с) — без await stop рапортовал
+            # бы «остановлено», пока задача ещё жива (C.1).
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logging.warning(
+                    "Задача автоотметки пользователя %s завершилась с ошибкой при остановке",
+                    user_id, exc_info=True,
+                )
+            logging.info('Пользователь %s остановил автокликалку.', user_id)
         return "Автокликалка остановлена."
 
     async def get_status(self):

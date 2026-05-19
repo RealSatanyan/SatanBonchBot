@@ -24,7 +24,6 @@
 а также -> botcore, security, db (вниз по слоям). Модуль НЕ импортирует main
 на уровне модуля — цикла зависимостей нет.
 """
-import asyncio
 import logging
 import re
 
@@ -138,9 +137,8 @@ async def auto_start_lesson(user_id):
         return
     if user_id in lesson_controller.controllers:  # Проверяем, есть ли контроллер для пользователя
         controller = lesson_controller.controllers[user_id]
-        if not controller.is_running:  # Если автокликалка не запущена, запускаем её
-            controller.task = asyncio.create_task(controller.start_lesson())
-            logging.info(f"Автокликалка автоматически запущена для пользователя {user_id}.")
+        if controller.start():  # Запускаем, если ещё не запущена (идемпотентно)
+            logging.info("Автокликалка автоматически запущена для пользователя %s.", user_id)
 
 
 async def perform_login(user_id: int, email: str, password: str) -> bool:

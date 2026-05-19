@@ -23,6 +23,15 @@ class FakeController:
     async def start_lesson(self):
         self.started = True
 
+    def start(self):
+        """Мимикрия LessonController.start: синхронный, идемпотентный."""
+        if self.is_running:
+            return False
+        self.is_running = True
+        self.started = True
+        self.task = object()  # sentinel — фоновая задача «создана»
+        return True
+
     async def stop_lesson(self, user_id):
         self.stopped = True
         self.is_running = False
