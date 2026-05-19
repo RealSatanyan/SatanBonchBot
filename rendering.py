@@ -144,8 +144,10 @@ def generate_timetable_image(timetable, group_timetable=None) -> str:
 
             y_right += 20  # Отступ между днями
 
-    # Сохраняем изображение
-    image_path = "timetable.png"
+    # Сохраняем изображение под уникальным именем (задача B.1): фиксированное
+    # timetable.png два одновременных запроса затирали бы до answer_photo.
+    unique_suffix = hashlib.md5(str(time_module.time()).encode()).hexdigest()[:8]
+    image_path = f"timetable_personal_{unique_suffix}.png"
     logging.info(f"Изображение успешно сохранено по пути: {image_path}")
     image.save(image_path)
     return image_path

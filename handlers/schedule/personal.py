@@ -6,6 +6,7 @@
 со своим Router().
 """
 
+import asyncio
 import os
 import logging
 from datetime import timedelta
@@ -60,9 +61,12 @@ async def process_image_week(callback_query: CallbackQuery):
         # Получаем расписание для выбранной недели
         timetable = await lk_client.apis[user_id].get_timetable(week_offset=week_offset)
 
-        # Генерируем изображение (с обогащением полным ФИО — задача B.2)
-        image_path = generate_timetable_image(
-            timetable, group_timetable=_user_group_timetable(user_id)
+        # Генерируем изображение (с обогащением полным ФИО — задача B.2).
+        # Рендер синхронный (PIL) — выносим в поток, чтобы не морозить
+        # event loop на сотни мс — секунды (задача B.1).
+        image_path = await asyncio.to_thread(
+            generate_timetable_image,
+            timetable, group_timetable=_user_group_timetable(user_id),
         )
 
         # Проверяем, что файл существует
@@ -70,11 +74,14 @@ async def process_image_week(callback_query: CallbackQuery):
             await callback_query.answer("Ошибка: изображение не было создано.", show_alert=True)
             return
 
-        # Создаем объект FSInputFile
-        photo = FSInputFile(image_path)
-
-        # Отправляем изображение пользователю
-        await callback_query.message.answer_photo(photo)
+        # Отправляем изображение пользователю и убираем временный файл.
+        try:
+            await callback_query.message.answer_photo(FSInputFile(image_path))
+        finally:
+            try:
+                os.remove(image_path)
+            except OSError:
+                pass
 
         # Подтверждаем обработку callback
         await callback_query.answer()

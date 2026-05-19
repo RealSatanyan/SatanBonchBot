@@ -10,6 +10,7 @@ timetable_loading) читается модуль-квалифицированн�
 т.к. оно переприсваивается на уровне модуля сервиса.
 """
 
+import asyncio
 import os
 import logging
 from datetime import timedelta
@@ -83,12 +84,14 @@ async def process_group_week_navigation(callback_query: CallbackQuery):
         if callback_data.startswith("image_group_week_"):
             await callback_query.answer("⏳ Генерирую изображение...")
             try:
-                # Генерируем изображение для текущей недели
-                image_path = generate_timetable_image_from_dict(
+                # Генерируем изображение для текущей недели. Рендер синхронный
+                # (PIL) — выносим в поток, чтобы не морозить event loop (B.1).
+                image_path = await asyncio.to_thread(
+                    generate_timetable_image_from_dict,
                     timetable,
                     f"Расписание группы {group_name}",
                     week_number=week_number,
-                    group_name=group_name
+                    group_name=group_name,
                 )
 
                 # Проверяем, что файл существует
