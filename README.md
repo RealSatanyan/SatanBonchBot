@@ -1,5 +1,10 @@
 # SatanBonchBot
 
+[![CI](https://github.com/RealSatanyan/SatanBonchBot/actions/workflows/ci.yml/badge.svg)](https://github.com/RealSatanyan/SatanBonchBot/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Code style: ruff](https://img.shields.io/badge/lint-ruff-46aef7.svg)](https://github.com/astral-sh/ruff)
+
 Telegram-бот для студентов СПбГУТ («Бонч»): расписание, автоотметка на парах
 через личный кабинет, чтение и отправка сообщений ЛК, напоминания о парах.
 
@@ -33,7 +38,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 cp .env.example .env        # затем заполните BOT_TOKEN и ENCRYPTION_KEY
-python main.py
+python -m satanbonchbot
 ```
 
 Сгенерировать `ENCRYPTION_KEY`:
@@ -93,14 +98,18 @@ docker compose exec bot python scripts/migrate_passwords.py   # в Docker
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                # тесты
-ruff check .          # линтер (конфигурация — ruff.toml)
+pytest                # тесты (конфиг — pyproject.toml)
+ruff check .          # линтер (конфиг — pyproject.toml)
 ```
 
 Тесты в `tests/` покрывают чистую логику: парсеры HTML, шифрование, rate-limit,
 настройки, форматирование расписания, логику интервалов пар. Сетевые функции
 и обработчики Telegram покрыты частично. Прогоняйте `pytest` и `ruff check .`
 перед пушем — деплой через Coolify их не запускает.
+
+На каждый push/PR в `main` GitHub Actions поднимают `ruff check .` и `pytest`
+(см. бейдж `CI` вверху и [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+CI — независимая проверка качества; деплой по-прежнему делает Coolify.
 
 ## Команды бота
 
@@ -115,25 +124,35 @@ ruff check .          # линтер (конфигурация — ruff.toml)
 
 ## Структура проекта
 
-Проект разбит на модули по слоям (конфигурация → хранилище → чистая логика →
-клиенты sut.ru → сервисы → обработчики → `main.py`). Полная карта модулей,
-слоёв и правил — в [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Прикладной код — в пакете `satanbonchbot/`; запуск через
+`python -m satanbonchbot`. Модули разложены по слоям (конфигурация →
+хранилище → чистая логика → клиенты `sut.ru` → сервисы → обработчики →
+`main.py`-оркестратор). Полная карта модулей, слоёв и правил —
+в [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-| Путь | Назначение |
-|------|------------|
-| `main.py` | Точка входа: регистрация роутеров, старт/остановка, polling. |
-| `config.py`, `botcore.py`, `states.py` | Конфигурация, экземпляры `Bot`/`Dispatcher`, FSM-состояния. |
-| `db.py`, `security.py` | SQLite (`users.db`) и шифрование паролей / rate-limit. |
-| `parsers.py`, `formatting.py`, `rendering.py`, `keyboards.py` | Чистая логика: парсеры, форматирование, PNG, клавиатуры. |
-| `public_timetable.py`, `lk_client.py`, `lesson_controller.py` | Клиенты `sut.ru`: публичное расписание, ЛК, автоотметка. |
-| `*_service.py` | Сервисы: загрузка расписания, сообщения ЛК, авторизация. |
-| `handlers/` | Обработчики aiogram (`schedule/`, `messages/` — под-пакеты по поддоменам). |
-| `tests/`, `conftest.py`, `pytest.ini` | Тесты и их конфигурация. |
-| `ruff.toml` | Конфигурация линтера. |
-| `scripts/` | Разовые скрипты обслуживания (`migrate_passwords.py` — уже выполнен). |
-| `Dockerfile`, `docker-compose.yml`, `.dockerignore` | Сборка и запуск в Docker. |
-| `assets/fonts/` | Шрифты (`*.ttf`, `*.otf`) для рендеринга картинки расписания. |
-| `plans/` | Планы развития проекта. |
+```
+.
+├── satanbonchbot/         # пакет: вся прикладная логика
+│   ├── __main__.py        # точка входа (python -m satanbonchbot)
+│   ├── main.py            # оркестратор: регистрация роутеров, polling, shutdown
+│   ├── config.py · botcore.py · states.py
+│   ├── db.py · security.py
+│   ├── parsers.py · formatting.py · rendering.py · keyboards.py
+│   ├── public_timetable.py · lk_client.py · lesson_controller.py
+│   ├── *_service.py       # timetable_service, messages_service, login_service
+│   └── handlers/          # aiogram-роутеры (schedule/, messages/ — поддомены)
+├── tests/                 # pytest, 450+ тестов
+├── docs/                  # ARCHITECTURE.md, plans/
+├── scripts/               # разовые скрипты обслуживания
+├── assets/fonts/          # шрифты для рендера PNG расписания
+├── conftest.py            # pytest-фикстуры
+├── healthcheck.py         # Docker healthcheck
+├── pyproject.toml         # метаданные + конфиг ruff/pytest
+├── requirements.txt · requirements-dev.txt
+├── Dockerfile · docker-compose.yml · .dockerignore
+├── LICENSE · README.md · .env.example
+└── .github/workflows/ci.yml
+```
 
 Не коммитятся (см. `.gitignore`): `.env`, `users.db`, `timetable.json`,
-`timetable.png`, `debug_dumps/`.
+`timetable*.png`, `debug_dumps/`.
