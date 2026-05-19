@@ -27,7 +27,9 @@ import pytz
 
 import db
 from botcore import bot
+import lk_client
 from lk_client import get_timetable_api
+from config import TIMETABLE_REFRESH_HOURS, GROUP_REDETECT_HOURS
 from timetable_cache import (
     _write_timetable_meta,
     _is_timetable_stale,
@@ -309,6 +311,66 @@ async def _refresh_timetable_quietly() -> None:
         logging.info("Фоновое обновление расписания групп завершено")
     except Exception:
         logging.warning("Фоновое обновление расписания не удалось", exc_info=True)
+
+
+def _group_redetect_every_ticks(refresh_hours: float, redetect_hours: float) -> int:
+    """Сколько тиков рефреша приходится на одно переопределение групп (A.3).
+
+    Рефреш расписания идёт каждый тик; переопределение групп — реже, т.к.
+    detect_user_group бьёт в ЛК на каждого пользователя, а группа меняется
+    ~раз в семестр. Не может быть чаще самого рефреша (минимум 1 тик).
+    """
+    return max(1, round(redetect_hours / refresh_hours))
+
+
+async def _redetect_user_groups() -> None:
+    """Переопределяет учебную группу всех авторизованных пользователей (A.3).
+
+    Между семестрами группа меняется, а detect_user_group при логине
+    срабатывает только если группа ещё не известна. Запросы в ЛК стагерим,
+    ошибки гасит сам detect_user_group.
+    """
+    import login_service
+
+    user_ids = list(lk_client.apis.keys())
+    if not user_ids:
+        return
+    logging.info("🔁 Переопределение учебных групп: %s пользователей", len(user_ids))
+    for user_id in user_ids:
+        api = lk_client.apis.get(user_id)
+        if api is None:
+            continue
+        await login_service.detect_user_group(user_id, api)
+        await asyncio.sleep(2)
+
+
+async def _periodic_refresh_tick(tick: int, redetect_every: int) -> None:
+    """Одна итерация periodic_refresh_loop: рефреш каждый тик, группы — по графику."""
+    await _refresh_timetable_quietly()
+    if tick % redetect_every == 0:
+        await _redetect_user_groups()
+
+
+async def periodic_refresh_loop() -> None:
+    """Фоновый цикл рефреша расписания и переопределения групп (A.3).
+
+    Раньше timetable.json обновлялся лениво — только по TTL при открытии
+    расписания группы. Если расписание никто не открывал, дифф C.1 не считался
+    и уведомления об изменениях не срабатывали. Этот цикл раз в
+    TIMETABLE_REFRESH_HOURS перечитывает расписание (дифф C.1 — каждый тик) и
+    реже (GROUP_REDETECT_HOURS) переопределяет группы пользователей.
+    """
+    interval = TIMETABLE_REFRESH_HOURS * 3600
+    redetect_every = _group_redetect_every_ticks(TIMETABLE_REFRESH_HOURS, GROUP_REDETECT_HOURS)
+    logging.info(
+        "🔁 Фоновый рефреш расписания запущен (раз в %s ч; группы — раз в %s тиков)",
+        TIMETABLE_REFRESH_HOURS, redetect_every,
+    )
+    tick = 0
+    while True:
+        await asyncio.sleep(interval)
+        tick += 1
+        await _periodic_refresh_tick(tick, redetect_every)
 
 
 async def get_all_groups_timetable(force_reload: bool = False, user_id: int = None, progress_message=None):

@@ -257,3 +257,101 @@ def test_all_groups_timetable_with_progress_collects_all_groups(monkeypatch, res
 
     assert set(result.keys()) == {"ИКВ-11", "ИКВ-12"}
     assert ts.timetable_progress['total'] == 2
+
+
+# --- A.3: фоновый рефреш + переопределение групп -----------------------------
+
+from timetable_service import _group_redetect_every_ticks
+
+
+async def _no_sleep(*a, **kw):
+    pass
+
+
+def test_group_redetect_every_ticks_daily_for_six_hour_refresh():
+    """Рефреш каждые 6ч, переопределение раз в сутки → раз в 4 тика."""
+    assert _group_redetect_every_ticks(refresh_hours=6, redetect_hours=24) == 4
+
+
+def test_group_redetect_every_ticks_never_more_often_than_refresh():
+    """Переопределение не может быть чаще рефреша — минимум 1 тик."""
+    assert _group_redetect_every_ticks(refresh_hours=12, redetect_hours=6) == 1
+
+
+def test_group_redetect_every_ticks_rounds_to_nearest():
+    assert _group_redetect_every_ticks(refresh_hours=5, redetect_hours=24) == 5
+
+
+def test_redetect_user_groups_calls_detect_for_each_authorized_user(monkeypatch, reset_registries):
+    import lk_client
+    import login_service
+    import timetable_service as ts
+
+    lk_client.apis[101] = object()
+    lk_client.apis[202] = object()
+
+    detected = []
+
+    async def _fake_detect(user_id, api):
+        detected.append(user_id)
+
+    monkeypatch.setattr(login_service, "detect_user_group", _fake_detect)
+    monkeypatch.setattr(ts.asyncio, "sleep", _no_sleep)
+
+    asyncio.run(ts._redetect_user_groups())
+
+    assert sorted(detected) == [101, 202]
+
+
+def test_redetect_user_groups_noop_without_authorized_users(monkeypatch, reset_registries):
+    import login_service
+    import timetable_service as ts
+
+    detected = []
+
+    async def _fake_detect(user_id, api):
+        detected.append(user_id)
+
+    monkeypatch.setattr(login_service, "detect_user_group", _fake_detect)
+
+    asyncio.run(ts._redetect_user_groups())
+
+    assert detected == []
+
+
+def test_periodic_refresh_tick_refreshes_every_tick_without_redetect(monkeypatch):
+    """Не каждый тик переопределяет группы — на промежуточном тике только рефреш."""
+    import timetable_service as ts
+    calls = {"refresh": 0, "redetect": 0}
+
+    async def _fake_refresh():
+        calls["refresh"] += 1
+
+    async def _fake_redetect():
+        calls["redetect"] += 1
+
+    monkeypatch.setattr(ts, "_refresh_timetable_quietly", _fake_refresh)
+    monkeypatch.setattr(ts, "_redetect_user_groups", _fake_redetect)
+
+    asyncio.run(ts._periodic_refresh_tick(tick=1, redetect_every=4))
+
+    assert calls == {"refresh": 1, "redetect": 0}
+
+
+def test_periodic_refresh_tick_redetects_groups_on_schedule(monkeypatch):
+    """На кратном тике рефреш сопровождается переопределением групп."""
+    import timetable_service as ts
+    calls = {"refresh": 0, "redetect": 0}
+
+    async def _fake_refresh():
+        calls["refresh"] += 1
+
+    async def _fake_redetect():
+        calls["redetect"] += 1
+
+    monkeypatch.setattr(ts, "_refresh_timetable_quietly", _fake_refresh)
+    monkeypatch.setattr(ts, "_redetect_user_groups", _fake_redetect)
+
+    asyncio.run(ts._periodic_refresh_tick(tick=4, redetect_every=4))
+
+    assert calls == {"refresh": 1, "redetect": 1}

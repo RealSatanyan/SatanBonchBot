@@ -130,6 +130,7 @@ from timetable_service import (
     get_all_groups_timetable,
     _refresh_timetable_quietly,
     preload_timetable,
+    periodic_refresh_loop,
 )
 
 # Сервис списка сообщений ЛК извлечён в messages_service.py (задача 4.1,
@@ -320,6 +321,11 @@ async def on_startup(dp):
     # Фоновый опрос входящих ЛК — уведомления о новых сообщениях (задача C.2).
     logging.info("📨 Запуск фонового опроса сообщений ЛК...")
     _background_tasks.append(asyncio.create_task(message_poll_loop()))
+
+    # Периодический рефреш расписания + переопределение групп (задача A.3):
+    # без него дифф уведомлений об изменении расписания (C.1) почти не срабатывает.
+    logging.info("🔁 Запуск фонового рефреша расписания...")
+    _background_tasks.append(asyncio.create_task(periodic_refresh_loop()))
 
     logging.info("✅ Инициализация завершена, polling готов к запуску...")
 
