@@ -187,7 +187,13 @@ async def check_new_messages_for_user(user_id: int) -> int:
 
     Первый опрос только фиксирует точку отсчёта (last_seen_message_id) —
     без уведомлений, чтобы не спамить уже накопившимися сообщениями.
+
+    Уважает тумблер B.1: если пользователь отключил уведомления о сообщениях,
+    ЛК не опрашиваем вовсе — ни пуша, ни лишнего запроса (антибот).
     """
+    if not db.get_notify_messages_enabled(user_id):
+        return 0
+
     message_api = await lk_client.get_message_api(user_id)
     if not message_api:
         return 0

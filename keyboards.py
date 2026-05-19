@@ -217,7 +217,8 @@ def messages_menu_kb() -> InlineKeyboardMarkup:
 
 def profile_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔔 Уведомления", callback_data="m:profile:notify")],
+        [InlineKeyboardButton(text="🔔 Напоминания о парах", callback_data="m:profile:notify")],
+        [InlineKeyboardButton(text="📢 Уведомления бота", callback_data="m:profile:subs")],
         [InlineKeyboardButton(text="🔄 Войти заново", callback_data="m:profile:relogin")],
         [InlineKeyboardButton(text="🚪 Выйти", callback_data="m:profile:logout")],
     ])
@@ -254,6 +255,33 @@ def notify_settings_kb(enabled: bool, minutes: int) -> InlineKeyboardMarkup:
             for opt in NOTIFY_MINUTE_OPTIONS
         ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# --- Тумблеры уведомлений бота (B.1) ---
+# Подписки на уведомления об изменении расписания (C.1) и о новых сообщениях ЛК
+# (C.2). Это отдельный экран профиля — не путать с напоминаниями о парах выше.
+
+def subs_settings_text(schedule_on: bool, messages_on: bool) -> str:
+    return (
+        "📢 Уведомления бота\n\n"
+        "Бот сам пишет, когда что-то меняется. Здесь можно отключить ненужное.\n\n"
+        f"{'🔔' if schedule_on else '🔕'} Изменения расписания группы\n"
+        f"{'🔔' if messages_on else '🔕'} Новые сообщения в ЛК\n\n"
+        "Нажми на пункт, чтобы переключить."
+    )
+
+
+def subs_settings_kb(schedule_on: bool, messages_on: bool) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="📅 Изменения расписания: " + ("вкл ✅" if schedule_on else "выкл 🚫"),
+            callback_data="m:subs:toggle:schedule",
+        )],
+        [InlineKeyboardButton(
+            text="✉️ Новые сообщения ЛК: " + ("вкл ✅" if messages_on else "выкл 🚫"),
+            callback_data="m:subs:toggle:messages",
+        )],
+    ])
 
 
 # --- Написание сообщения: тема и выбор получателя ---

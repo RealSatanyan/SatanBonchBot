@@ -33,7 +33,9 @@ with closing(sqlite3.connect('users.db')) as _ddl_db:
             notify_minutes INTEGER NOT NULL DEFAULT 10,
             autoclick_enabled INTEGER NOT NULL DEFAULT 1,
             group_name TEXT,
-            last_seen_message_id TEXT
+            last_seen_message_id TEXT,
+            notify_schedule_enabled INTEGER NOT NULL DEFAULT 1,
+            notify_messages_enabled INTEGER NOT NULL DEFAULT 1
         )
     ''')
     # Миграция уже существующих БД: добавляем недостающие колонки настроек
@@ -53,6 +55,12 @@ with closing(sqlite3.connect('users.db')) as _ddl_db:
     # по нему фоновый опрос отличает новые сообщения от уже показанных.
     if 'last_seen_message_id' not in _user_columns:
         _ddl_db.execute('ALTER TABLE users ADD COLUMN last_seen_message_id TEXT')
+    # Тумблеры уведомлений бота (задача B.1): подписки на уведомления об
+    # изменении расписания (C.1) и о новых сообщениях ЛК (C.2). По умолчанию вкл.
+    if 'notify_schedule_enabled' not in _user_columns:
+        _ddl_db.execute('ALTER TABLE users ADD COLUMN notify_schedule_enabled INTEGER NOT NULL DEFAULT 1')
+    if 'notify_messages_enabled' not in _user_columns:
+        _ddl_db.execute('ALTER TABLE users ADD COLUMN notify_messages_enabled INTEGER NOT NULL DEFAULT 1')
     _ddl_db.commit()
 
 
@@ -138,6 +146,46 @@ def get_users_by_group(group_name: str) -> list:
     """user_id всех пользователей указанной учебной группы (задача C.1)."""
     cursor.execute('SELECT user_id FROM users WHERE group_name = ?', (group_name,))
     return [row[0] for row in cursor.fetchall()]
+
+
+# --- Тумблеры уведомлений бота (задача B.1) ----------------------------------
+
+def get_notify_schedule_enabled(user_id: int) -> bool:
+    """Подписан ли пользователь на уведомления об изменении расписания (C.1).
+
+    Неизвестный пользователь / NULL — считаем подписанным (уведомления по
+    умолчанию включены).
+    """
+    cursor.execute('SELECT notify_schedule_enabled FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    if not row or row[0] is None:
+        return True
+    return bool(row[0])
+
+
+def set_notify_schedule_enabled(user_id: int, enabled: bool) -> None:
+    with conn:
+        cursor.execute(
+            'UPDATE users SET notify_schedule_enabled = ? WHERE user_id = ?',
+            (1 if enabled else 0, user_id),
+        )
+
+
+def get_notify_messages_enabled(user_id: int) -> bool:
+    """Подписан ли пользователь на уведомления о новых сообщениях ЛК (C.2)."""
+    cursor.execute('SELECT notify_messages_enabled FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    if not row or row[0] is None:
+        return True
+    return bool(row[0])
+
+
+def set_notify_messages_enabled(user_id: int, enabled: bool) -> None:
+    with conn:
+        cursor.execute(
+            'UPDATE users SET notify_messages_enabled = ? WHERE user_id = ?',
+            (1 if enabled else 0, user_id),
+        )
 
 
 # --- Последнее виденное сообщение ЛК (задача C.2) ----------------------------

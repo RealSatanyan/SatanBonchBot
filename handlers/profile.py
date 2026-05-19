@@ -14,8 +14,18 @@ from keyboards import (
     main_menu_kb,
     notify_settings_text,
     notify_settings_kb,
+    subs_settings_text,
+    subs_settings_kb,
 )
-from db import get_notify_settings, set_notify_enabled, set_notify_minutes
+from db import (
+    get_notify_settings,
+    set_notify_enabled,
+    set_notify_minutes,
+    get_notify_schedule_enabled,
+    set_notify_schedule_enabled,
+    get_notify_messages_enabled,
+    set_notify_messages_enabled,
+)
 import db
 import lk_client
 import lesson_controller
@@ -62,6 +72,41 @@ async def cb_notify_minutes(callback_query: CallbackQuery, state: FSMContext):
     await callback_query.message.edit_text(
         notify_settings_text(enabled, minutes),
         reply_markup=notify_settings_kb(enabled, minutes),
+    )
+
+
+@router.callback_query(F.data == "m:profile:subs")
+async def cb_subs_settings(callback_query: CallbackQuery, state: FSMContext):
+    """Экран тумблеров уведомлений бота — изменения расписания / сообщения ЛК (B.1)."""
+    await state.clear()
+    await callback_query.answer()
+    user_id = callback_query.from_user.id
+    schedule_on = get_notify_schedule_enabled(user_id)
+    messages_on = get_notify_messages_enabled(user_id)
+    await callback_query.message.answer(
+        subs_settings_text(schedule_on, messages_on),
+        reply_markup=subs_settings_kb(schedule_on, messages_on),
+    )
+
+
+@router.callback_query(F.data.startswith("m:subs:toggle:"))
+async def cb_subs_toggle(callback_query: CallbackQuery, state: FSMContext):
+    """Переключает один из тумблеров уведомлений бота (B.1)."""
+    user_id = callback_query.from_user.id
+    which = callback_query.data.rsplit(":", 1)[-1]
+    if which == "schedule":
+        set_notify_schedule_enabled(user_id, not get_notify_schedule_enabled(user_id))
+    elif which == "messages":
+        set_notify_messages_enabled(user_id, not get_notify_messages_enabled(user_id))
+    else:
+        await callback_query.answer()
+        return
+    schedule_on = get_notify_schedule_enabled(user_id)
+    messages_on = get_notify_messages_enabled(user_id)
+    await callback_query.answer("Готово")
+    await callback_query.message.edit_text(
+        subs_settings_text(schedule_on, messages_on),
+        reply_markup=subs_settings_kb(schedule_on, messages_on),
     )
 
 

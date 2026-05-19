@@ -119,3 +119,19 @@ def test_empty_inbox_returns_zero(monkeypatch, temp_db):
     _patch(monkeypatch, [])
 
     assert asyncio.run(check_new_messages_for_user(1)) == 0
+
+
+# --- тумблер уведомлений о сообщениях (B.1) ----------------------------------
+
+def test_messages_notifications_off_skips_poll_entirely(monkeypatch, temp_db):
+    """Тумблер B.1 выключен — ЛК не опрашивается, пуша нет."""
+    import db
+    _add_user(temp_db, 1)
+    db.set_notify_messages_enabled(1, False)
+    db.set_last_seen_message_id(1, "m1")
+    fake_bot = _patch(monkeypatch, [_msg("m3"), _msg("m2"), _msg("m1")])
+
+    notified = asyncio.run(check_new_messages_for_user(1))
+
+    assert notified == 0
+    assert fake_bot.sent == []

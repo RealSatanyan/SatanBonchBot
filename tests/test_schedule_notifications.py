@@ -143,3 +143,35 @@ def test_notify_skips_mass_change(monkeypatch, temp_db):
     asyncio.run(notify_schedule_changes(old, new))
 
     assert fake_bot.sent == []
+
+
+def test_notify_skips_user_with_schedule_notifications_off(monkeypatch, temp_db):
+    """Тумблер B.1 выключен — пользователю изменения расписания не приходят."""
+    fake_bot = _FakeBot()
+    monkeypatch.setattr(timetable_service, "bot", fake_bot)
+    _add_user(temp_db, 1, "ИКВ-11")
+    _add_user(temp_db, 2, "ИКВ-11")
+    db.set_notify_schedule_enabled(2, False)
+
+    old = {"ИКВ-11": [_lesson(subject="Физика")]}
+    new = {"ИКВ-11": [_lesson(subject="Физика"), _lesson(subject="Сети")]}
+
+    asyncio.run(notify_schedule_changes(old, new))
+
+    notified = {s['chat_id'] for s in fake_bot.sent}
+    assert notified == {1}  # пользователь 2 отключил уведомления
+
+
+def test_notify_silent_when_all_recipients_opted_out(monkeypatch, temp_db):
+    """Все подписчики группы отключили уведомления — рассылки нет вовсе."""
+    fake_bot = _FakeBot()
+    monkeypatch.setattr(timetable_service, "bot", fake_bot)
+    _add_user(temp_db, 1, "ИКВ-11")
+    db.set_notify_schedule_enabled(1, False)
+
+    old = {"ИКВ-11": [_lesson(subject="Физика")]}
+    new = {"ИКВ-11": [_lesson(subject="Физика"), _lesson(subject="Сети")]}
+
+    asyncio.run(notify_schedule_changes(old, new))
+
+    assert fake_bot.sent == []

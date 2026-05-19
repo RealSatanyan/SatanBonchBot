@@ -283,6 +283,8 @@ async def notify_schedule_changes(old_cache: dict, new_cache: dict) -> None:
             )
             continue
         user_ids = db.get_users_by_group(group_name)
+        # Уважаем тумблер B.1: шлём только подписанным на изменения расписания.
+        user_ids = [uid for uid in user_ids if db.get_notify_schedule_enabled(uid)]
         if not user_ids:
             continue
         text = _format_schedule_diff(group_name, added, removed)

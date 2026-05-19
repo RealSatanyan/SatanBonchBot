@@ -82,3 +82,41 @@ def test_set_autoclick_re_enabled(temp_db):
     main.set_autoclick_enabled(8, False)
     main.set_autoclick_enabled(8, True)
     assert main.get_autoclick_enabled(8) is True
+
+
+# --- тумблеры уведомлений бота (B.1) -----------------------------------------
+
+def test_notify_schedule_enabled_default_true_for_fresh_user(temp_db):
+    _register(temp_db, 10)
+    assert main.get_notify_schedule_enabled(10) is True
+
+
+def test_notify_schedule_enabled_unknown_user_defaults_true(temp_db):
+    assert main.get_notify_schedule_enabled(777) is True
+
+
+def test_set_notify_schedule_disabled_persists(temp_db):
+    _register(temp_db, 11)
+    main.set_notify_schedule_enabled(11, False)
+    assert main.get_notify_schedule_enabled(11) is False
+    main.set_notify_schedule_enabled(11, True)
+    assert main.get_notify_schedule_enabled(11) is True
+
+
+def test_notify_messages_enabled_default_true_for_fresh_user(temp_db):
+    _register(temp_db, 12)
+    assert main.get_notify_messages_enabled(12) is True
+
+
+def test_set_notify_messages_disabled_persists(temp_db):
+    _register(temp_db, 13)
+    main.set_notify_messages_enabled(13, False)
+    assert main.get_notify_messages_enabled(13) is False
+
+
+def test_notify_toggles_are_independent(temp_db):
+    """Выключение одного тумблера не трогает второй."""
+    _register(temp_db, 14)
+    main.set_notify_schedule_enabled(14, False)
+    assert main.get_notify_schedule_enabled(14) is False
+    assert main.get_notify_messages_enabled(14) is True

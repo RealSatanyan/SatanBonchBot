@@ -48,6 +48,10 @@ from db import (
     set_notify_minutes,
     get_autoclick_enabled,
     set_autoclick_enabled,
+    get_notify_schedule_enabled,
+    set_notify_schedule_enabled,
+    get_notify_messages_enabled,
+    set_notify_messages_enabled,
     NOTIFY_DEFAULT_MINUTES,
 )
 
