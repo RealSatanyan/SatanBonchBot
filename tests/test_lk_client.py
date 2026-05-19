@@ -9,6 +9,7 @@ DebuggableBonchAPI создаёт aiohttp.CookieJar в __init__, поэтому 
 """
 import asyncio
 
+import aiohttp
 import pytest
 
 import lk_client
@@ -113,6 +114,35 @@ def test_login_fails_on_network_error(monkeypatch):
     assert _run_login(_BrokenSession, monkeypatch) is False
 
 
+# --- login: percent-кодирование учётных данных (A.2) -------------------------
+
+def test_login_percent_encodes_credentials_in_auth_url(monkeypatch):
+    """Email и пароль со спецсимволами percent-кодируются в AUTH-URL (A.2).
+
+    Сырой `&`/`#`/пробел в query-строке исказил бы значение — портал получил
+    бы обрезанный пароль и вернул бы необъяснимое «неверный логин/пароль».
+    """
+    captured = []
+
+    class _CapturingSession(_FakeLoginSession):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            captured.append(self)
+
+    _patch_session(monkeypatch, _CapturingSession)
+
+    async def scenario():
+        api = lk_client.DebuggableBonchAPI()
+        return await api.login("user+a@sut.ru", "p&ss#1 x")
+
+    asyncio.run(scenario())
+
+    auth_url = next(u for s in captured for u in s.posts)
+    assert "p&ss#1" not in auth_url
+    assert "parole=p%26ss%231%20x" in auth_url
+    assert "users=user%2Ba%40sut.ru" in auth_url
+
+
 # --- get_raw_timetable: переавторизация --------------------------------------
 
 class _ExpiredSessionStub(_FakeLoginSession):
@@ -190,6 +220,8 @@ def test_get_messages_page_returns_empty_on_php_error(monkeypatch):
 
 
 def test_get_messages_page_returns_empty_on_network_error(monkeypatch):
+    monkeypatch.setattr(lk_client, "_LK_RETRY_BACKOFF_SEC", 0)
+
     class _BrokenSession(_FakeMessageSession):
         def get(self, url, **kwargs):
             raise ConnectionError("сеть недоступна")
@@ -248,6 +280,12 @@ class _ScriptedSession:
         self._steps = list(steps)
         self.calls = 0
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
     def _next(self, url, **kwargs):
         self.calls += 1
         step = self._steps.pop(0)
@@ -260,6 +298,17 @@ class _ScriptedSession:
 
     def post(self, url, **kwargs):
         return self._next(url, **kwargs)
+
+
+def _scripted_session_cls(steps, sink):
+    """Класс ClientSession-заглушки: каждый инстанс отыгрывает `steps`, кладётся в `sink`."""
+
+    class _Cls(_ScriptedSession):
+        def __init__(self, **kwargs):
+            super().__init__(list(steps))
+            sink.append(self)
+
+    return _Cls
 
 
 def test_lk_fetch_retries_network_error_then_succeeds(monkeypatch):
@@ -332,3 +381,93 @@ def test_login_succeeds_after_transient_network_error(monkeypatch):
             return _FakeResponse(200, "<html>cabinet</html>")
 
     assert _run_login(_FlakyLoginSession, monkeypatch) is True
+
+
+# --- сообщения ЛК: ретраи при сетевом сбое (A.1) -----------------------------
+
+def _connector_error(msg="отказ соединения"):
+    """Строит aiohttp.ClientConnectorError — «доотправочный» сбой (запрос не ушёл)."""
+    from aiohttp.client_reqrep import ConnectionKey
+
+    key = ConnectionKey(host="lk.sut.ru", port=443, is_ssl=True, ssl=None,
+                        proxy=None, proxy_auth=None, proxy_headers_hash=None)
+    return aiohttp.ClientConnectorError(key, OSError(msg))
+
+
+def test_get_messages_page_retries_transient_error_no_false_empty(monkeypatch):
+    """Разовый сетевой сбой при опросе сообщений повторяется — ложного «нет сообщений» нет."""
+    monkeypatch.setattr(lk_client, "_LK_RETRY_BACKOFF_SEC", 0)
+    sink = []
+    cls = _scripted_session_cls(
+        [ConnectionError("blip"), _FlakyResponse(200, b"<html></html>")], sink)
+    _patch_session(monkeypatch, cls)
+
+    async def scenario():
+        api = lk_client.DebuggableBonchAPI()
+        return await api.get_messages_page(2)
+
+    asyncio.run(scenario())
+    assert sink[0].calls == 2  # сбой + успешный повтор, а не «пустой» результат из except
+
+
+def test_get_message_retries_transient_error(monkeypatch):
+    monkeypatch.setattr(lk_client, "_LK_RETRY_BACKOFF_SEC", 0)
+    sink = []
+    cls = _scripted_session_cls(
+        [ConnectionError("blip"),
+         _FlakyResponse(200, '{"name": "Тема"}'.encode("utf-8"))], sink)
+    _patch_session(monkeypatch, cls)
+
+    async def scenario():
+        api = lk_client.DebuggableBonchAPI()
+        return await api.get_message("123")
+
+    result = asyncio.run(scenario())
+    assert sink[0].calls == 2
+    assert result["name"] == "Тема"
+
+
+def test_lk_search_recipients_retries_transient_error(monkeypatch):
+    monkeypatch.setattr(lk_client, "_LK_RETRY_BACKOFF_SEC", 0)
+    sink = []
+    cls = _scripted_session_cls(
+        [ConnectionError("blip"), _FlakyResponse(200, b"<html></html>")], sink)
+    _patch_session(monkeypatch, cls)
+
+    async def scenario():
+        api = lk_client.DebuggableBonchAPI()
+        return await lk_client.lk_search_recipients(api, "Иванов")
+
+    asyncio.run(scenario())
+    assert sink[0].calls == 2
+
+
+def test_lk_send_message_retries_pre_send_failure(monkeypatch):
+    """«Доотправочный» сбой (соединение не установлено) безопасно повторяется."""
+    monkeypatch.setattr(lk_client, "_LK_RETRY_BACKOFF_SEC", 0)
+    sink = []
+    cls = _scripted_session_cls([_connector_error(), _FlakyResponse(200, b"")], sink)
+    _patch_session(monkeypatch, cls)
+
+    async def scenario():
+        api = lk_client.DebuggableBonchAPI()
+        return await lk_client.lk_send_message(api, 42, "Тема", "Текст")
+
+    assert asyncio.run(scenario()) is True
+    assert sink[0].calls == 2
+
+
+def test_lk_send_message_does_not_retry_ambiguous_failure(monkeypatch):
+    """Неоднозначный сбой после отправки НЕ ретраится — иначе создаётся дубль сообщения."""
+    monkeypatch.setattr(lk_client, "_LK_RETRY_BACKOFF_SEC", 0)
+    sink = []
+    cls = _scripted_session_cls(
+        [ConnectionError("оборвалось после POST"), _FlakyResponse(200, b"")], sink)
+    _patch_session(monkeypatch, cls)
+
+    async def scenario():
+        api = lk_client.DebuggableBonchAPI()
+        return await lk_client.lk_send_message(api, 42, "Тема", "Текст")
+
+    assert asyncio.run(scenario()) is False
+    assert sink[0].calls == 1  # ровно одна попытка — дубль не создаётся
