@@ -2,16 +2,16 @@
 import asyncio
 from datetime import datetime, time
 
-from satanbonchbot import main
+from satanbonchbot import lesson_controller, lk_client
 
 
 def _controller():
     # api и bot не нужны для проверки временной логики.
-    return main.LessonController(api=None, bot=None, user_id=1)
+    return lesson_controller.LessonController(api=None, bot=None, user_id=1)
 
 
 async def _construct_api():
-    return main.DebuggableBonchAPI()
+    return lk_client.DebuggableBonchAPI()
 
 
 def _api():
@@ -152,7 +152,7 @@ def test_api_week_parsers_delegate(load_fixture):
 def test_save_debug_dump_disabled_returns_none(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("DEBUG_DUMPS", "0")
-    assert main.save_debug_dump("test", "<html>") is None
+    assert lk_client.save_debug_dump("test", "<html>") is None
     assert not (tmp_path / "debug_dumps").exists()
 
 
@@ -160,14 +160,14 @@ def test_save_debug_dump_disabled_by_default(monkeypatch, tmp_path):
     """Без переменной DEBUG_DUMPS дампы не пишутся — opt-in, не opt-out."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("DEBUG_DUMPS", raising=False)
-    assert main.save_debug_dump("test", "<html>") is None
+    assert lk_client.save_debug_dump("test", "<html>") is None
     assert not (tmp_path / "debug_dumps").exists()
 
 
 def test_save_debug_dump_writes_file(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("DEBUG_DUMPS", "1")
-    path = main.save_debug_dump("no_candidates", "<html>контент</html>")
+    path = lk_client.save_debug_dump("no_candidates", "<html>контент</html>")
     assert path is not None
     assert path.exists()
     assert path.read_text(encoding="utf-8") == "<html>контент</html>"
@@ -179,6 +179,6 @@ def test_save_debug_dump_prunes_old_files(monkeypatch, tmp_path):
     monkeypatch.setenv("DEBUG_DUMPS", "1")
     monkeypatch.setenv("DEBUG_DUMPS_KEEP", "3")
     for i in range(6):
-        main.save_debug_dump("dump", f"content {i}")
+        lk_client.save_debug_dump("dump", f"content {i}")
     remaining = list((tmp_path / "debug_dumps").glob("*.html"))
     assert len(remaining) == 3

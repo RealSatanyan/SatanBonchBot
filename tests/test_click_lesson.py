@@ -11,7 +11,6 @@ from datetime import datetime
 import pytest
 
 from satanbonchbot import lk_client
-from satanbonchbot import main
 
 
 class _FakeResponse:
