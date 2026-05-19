@@ -4,8 +4,8 @@
 
 Лист графа зависимостей: только stdlib + PIL. Не импортирует проектные модули.
 Шрифты (`G8.otf`, `Montserrat-SemiBold.ttf`, `seguiemj.ttf`, `OpenSansEmoji.ttf`)
-грузятся по относительным путям из корня проекта — пути сохранены ровно как в
-main.py, rendering.py лежит в том же корне, рабочая директория та же.
+лежат в `assets/fonts/` и грузятся через _font_path() — путь строится от
+расположения этого модуля, не зависит от рабочей директории.
 """
 
 import hashlib
@@ -15,6 +15,13 @@ import time as time_module
 from datetime import datetime
 
 from PIL import Image, ImageDraw, ImageFont
+
+_FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "fonts")
+
+
+def _font_path(name: str) -> str:
+    """Абсолютный путь к шрифту в assets/fonts/ — не зависит от рабочей директории."""
+    return os.path.join(_FONTS_DIR, name)
 
 
 def generate_timetable_image(timetable) -> str:
@@ -29,8 +36,8 @@ def generate_timetable_image(timetable) -> str:
     draw = ImageDraw.Draw(image)
 
     # Шрифты
-    text_font_path = "G8.otf"  # Шрифт для текста
-    emoji_font_path = "seguiemj.ttf"  # Шрифт для эмодзи (например, Segoe UI Emoji)
+    text_font_path = _font_path("G8.otf")  # Шрифт для текста
+    emoji_font_path = _font_path("seguiemj.ttf")  # Шрифт для эмодзи (например, Segoe UI Emoji)
 
     try:
         text_font = ImageFont.truetype(text_font_path, size=20)
@@ -176,7 +183,7 @@ def draw_rounded_rectangle(draw, xy, radius, fill=None, outline=None, width=1):
 
 def generate_timetable_image_from_dict(timetable: list, title: str = "Расписание", week_number: int = None, group_name: str = "") -> str:
     """
-    Генерирует красивое изображение с расписанием из словарей (формат TImetabels.py).
+    Генерирует красивое изображение с расписанием из словарей (формат public_timetable.py).
     :param timetable: Список словарей с занятиями.
     :param title: Заголовок расписания.
     :param week_number: Номер недели для фильтрации (None - все недели).
@@ -195,7 +202,7 @@ def generate_timetable_image_from_dict(timetable: list, title: str = "Распи
         image = Image.new('RGB', (width, height), color=(245, 247, 250))
         draw = ImageDraw.Draw(image)
         try:
-            text_font = ImageFont.truetype("G8.otf", size=24)
+            text_font = ImageFont.truetype(_font_path("G8.otf"), size=24)
         except IOError:
             text_font = ImageFont.load_default()
         message = "Расписание пусто" if not timetable else timetable
@@ -211,7 +218,7 @@ def generate_timetable_image_from_dict(timetable: list, title: str = "Распи
             image = Image.new('RGB', (width, height), color=(245, 247, 250))
             draw = ImageDraw.Draw(image)
             try:
-                text_font = ImageFont.truetype("G8.otf", size=24)
+                text_font = ImageFont.truetype(_font_path("G8.otf"), size=24)
             except IOError:
                 text_font = ImageFont.load_default()
             draw.text((50, 100), f"Нет занятий на неделе №{week_number}", fill=(100, 100, 100), font=text_font)
@@ -281,8 +288,8 @@ def generate_timetable_image_from_dict(timetable: list, title: str = "Распи
         draw.rectangle([(0, i), (width, i + 1)], fill=(r, g, b))
 
     # Шрифты - используем Montserrat-SemiBold для текста, seguiemj для цветных эмодзи (COLR)
-    text_font_path = "Montserrat-SemiBold.ttf"
-    emoji_font_path = "seguiemj.ttf"
+    text_font_path = _font_path("Montserrat-SemiBold.ttf")
+    emoji_font_path = _font_path("seguiemj.ttf")
 
     # Шрифты для текста (Montserrat-SemiBold)
     try:
@@ -311,7 +318,7 @@ def generate_timetable_image_from_dict(timetable: list, title: str = "Распи
         logging.error(f"Ошибка при загрузке {emoji_font_path}: {e}")
         # Fallback на OpenSansEmoji если seguiemj не найден
         try:
-            emoji_font_path_fallback = "OpenSansEmoji.ttf"
+            emoji_font_path_fallback = _font_path("OpenSansEmoji.ttf")
             emoji_font = ImageFont.truetype(emoji_font_path_fallback, size=18)
             emoji_font_small = ImageFont.truetype(emoji_font_path_fallback, size=14)
             logging.warning("seguiemj.ttf не найден, используем OpenSansEmoji.ttf")
@@ -659,8 +666,8 @@ def draw_lesson(draw, lesson_info, x, y, text_font, emoji_font, max_width):
     font_size = 20
     while True:
         try:
-            text_font = ImageFont.truetype("G8.otf", size=font_size)
-            emoji_font = ImageFont.truetype("seguiemj.ttf", size=font_size)
+            text_font = ImageFont.truetype(_font_path("G8.otf"), size=font_size)
+            emoji_font = ImageFont.truetype(_font_path("seguiemj.ttf"), size=font_size)
         except IOError:
             text_font = ImageFont.load_default()
             emoji_font = ImageFont.load_default()

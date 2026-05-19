@@ -34,5 +34,4 @@ requirements-dev.txt
 .pytest_cache/
 htmlcov/
 
-# Шрифты (*.ttf/*.otf) НЕ игнорируем — Dockerfile копирует их явно,
-# они нужны для рендера timetable.png.
+# Шрифты лежат в assets/fonts/ — НЕ игнорируем, нужны для рендера timetable.png.

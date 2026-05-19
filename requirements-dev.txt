@@ -1,7 +1,7 @@
 # Зависимости для разработки и запуска тестов (см. tests/).
 # Установка:  pip install -r requirements-dev.txt
 #
-# Включает -r requirements.txt: тесты импортируют main.py / TImetabels.py,
+# Включает -r requirements.txt: тесты импортируют main.py / public_timetable.py,
 # которым нужны все рантайм-зависимости бота.
 -r requirements.txt
 pytest==9.0.3

@@ -18,7 +18,7 @@ L5  handlers/  (common, schedule/, autoclick, messages, profile)
         │      ← обработчики aiogram (Router per file)
 L4  timetable_service · messages_service · login_service
         │      ← сервисы: оркестрация прикладной логики
-L3  TImetabels · lk_client · lesson_controller
+L3  public_timetable · lk_client · lesson_controller
         │      ← клиенты внешних сервисов sut.ru (сеть)
 L2  parsers · formatting · rendering · keyboards · timetable_cache · monitoring
         │      ← чистая логика: без сети, почти без состояния
@@ -40,7 +40,7 @@ L0  config · botcore · states            ← конфигурация и ин�
 | | `keyboards.py` | Сборщики UI-клавиатур, `BTN_*`-константы, нав-кнопки. |
 | | `timetable_cache.py` | TTL-хелперы кэша расписания (метаданные снимка). |
 | | `monitoring.py` | `ParserFailureMonitor` — алерты админам о поломке парсера ЛК. |
-| **L3 — Клиенты sut.ru** | `TImetabels.py` | Публичное расписание (`cabinet.sut.ru`, без логина) и чтение сообщений ЛК. |
+| **L3 — Клиенты sut.ru** | `public_timetable.py` | Публичное расписание `cabinet.sut.ru` без логина: список групп, расписание, фильтры. |
 | | `lk_client.py` | Авторизованный клиент ЛК (`DebuggableBonchAPI`), реестр `apis`, синглтон `timetable_api`, `lk_*`-операции. |
 | | `lesson_controller.py` | `LessonController` — автоотметка занятий, реестр `controllers`. |
 | **L4 — Сервисы** | `timetable_service.py` | Загрузка расписания всех групп (кэш в памяти, TTL, фоновое обновление, прогресс). |
@@ -55,8 +55,8 @@ L0  config · botcore · states            ← конфигурация и ин�
 
 **Вне слоёв:** `healthcheck.py` — отдельный процесс для Docker-healthcheck
 (проверяет свежесть heartbeat-файла); `scripts/` — разовые скрипты
-обслуживания; `parsers.py` ↔ `TImetabels.py` — `TImetabels` использует
-`parsers` (парсеры — чистый L2).
+обслуживания; `parsers.py` ↔ `public_timetable.py` — `public_timetable`
+использует `parsers` (парсеры — чистый L2).
 
 ## Правила
 

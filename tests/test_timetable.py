@@ -1,10 +1,10 @@
-"""Тесты BonchAPI из TImetabels.py: разбор времени, фильтры, JSON, неделя."""
+"""Тесты BonchAPI из public_timetable.py: разбор времени, фильтры, JSON, неделя."""
 import asyncio
 import json
 
 import pytest
 
-from TImetabels import BonchAPI
+from public_timetable import BonchAPI
 
 
 SAMPLE_TIMETABLE = {
@@ -240,7 +240,7 @@ def test_get_groups_survives_broken_faculties_response(monkeypatch):
     """Битый ответ на список факультетов → get_groups не падает с трейсбеком."""
     broken = _FakeGroupsResponse(200, b"\xff\xfe broken")
     monkeypatch.setattr(
-        "TImetabels.aiohttp.ClientSession",
+        "public_timetable.aiohttp.ClientSession",
         lambda *a, **k: _FakeGroupsSession(broken),
     )
     api = BonchAPI("2026-02-03")
@@ -252,7 +252,7 @@ def test_get_groups_keeps_previous_groups_when_response_broken(monkeypatch):
     """Битый ответ не затирает ранее загруженные группы."""
     broken = _FakeGroupsResponse(200, b"\xff\xfe broken")
     monkeypatch.setattr(
-        "TImetabels.aiohttp.ClientSession",
+        "public_timetable.aiohttp.ClientSession",
         lambda *a, **k: _FakeGroupsSession(broken),
     )
     api = BonchAPI("2026-02-03")

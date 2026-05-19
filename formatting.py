@@ -172,7 +172,7 @@ def merge_lessons_by_groups(lessons: list) -> list:
 
 def format_timetable_dict(timetable: list, title: str = "Расписание", week_number: int = None) -> str:
     """
-    Форматирует список занятий из словарей (формат TImetabels.py) в читаемый текст.
+    Форматирует список занятий из словарей (формат public_timetable.py) в читаемый текст.
     :param timetable: Список словарей с занятиями.
     :param title: Заголовок расписания.
     :param week_number: Номер недели для фильтрации (None - все недели).

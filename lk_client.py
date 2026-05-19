@@ -67,12 +67,12 @@ LK_MAX_FILE_SIZE_MB = 5
 
 # Импорт для работы с расписанием без авторизации
 try:
-    from TImetabels import BonchAPI as TimetableBonchAPI
+    from public_timetable import BonchAPI as TimetableBonchAPI
 except ImportError:
     # Если импорт не работает, используем альтернативный путь
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from TImetabels import BonchAPI as TimetableBonchAPI
+    from public_timetable import BonchAPI as TimetableBonchAPI
 
 
 class DebuggableBonchAPI(BonchAPI):

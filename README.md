@@ -125,14 +125,14 @@ ruff check .          # линтер (конфигурация — ruff.toml)
 | `config.py`, `botcore.py`, `states.py` | Конфигурация, экземпляры `Bot`/`Dispatcher`, FSM-состояния. |
 | `db.py`, `security.py` | SQLite (`users.db`) и шифрование паролей / rate-limit. |
 | `parsers.py`, `formatting.py`, `rendering.py`, `keyboards.py` | Чистая логика: парсеры, форматирование, PNG, клавиатуры. |
-| `TImetabels.py`, `lk_client.py`, `lesson_controller.py` | Клиенты `sut.ru`: публичное расписание, ЛК, автоотметка. |
+| `public_timetable.py`, `lk_client.py`, `lesson_controller.py` | Клиенты `sut.ru`: публичное расписание, ЛК, автоотметка. |
 | `*_service.py` | Сервисы: загрузка расписания, сообщения ЛК, авторизация. |
 | `handlers/` | Обработчики aiogram (`schedule/` — под-пакет по поддоменам). |
 | `tests/`, `conftest.py`, `pytest.ini` | Тесты и их конфигурация. |
 | `ruff.toml` | Конфигурация линтера. |
 | `scripts/` | Разовые скрипты обслуживания (`migrate_passwords.py` — уже выполнен). |
 | `Dockerfile`, `docker-compose.yml`, `.dockerignore` | Сборка и запуск в Docker. |
-| `*.ttf`, `*.otf` | Шрифты для рендеринга картинки расписания. |
+| `assets/fonts/` | Шрифты (`*.ttf`, `*.otf`) для рендеринга картинки расписания. |
 | `plans/` | Планы развития проекта. |
 
 Не коммитятся (см. `.gitignore`): `.env`, `users.db`, `timetable.json`,

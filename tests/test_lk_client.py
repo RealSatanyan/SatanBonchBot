@@ -145,7 +145,7 @@ def test_click_start_lesson_raises_when_session_expired(monkeypatch):
     assert raised is True
 
 
-# --- сообщения ЛК (перенесены из TImetabels в A.1.2) -------------------------
+# --- сообщения ЛК (перенесены из public_timetable в A.1.2) -------------------
 
 class _FakeMessageSession:
     """ClientSession для методов сообщений: GET кабинета — прогрев, остальное — page_text."""

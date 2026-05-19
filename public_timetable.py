@@ -10,7 +10,7 @@ import parsers
 from datetime import datetime, timedelta, time
 
 # Браузерные заголовки для запросов в sut.ru — единый источник в config.py.
-# Реэкспортируем имя ради обратной совместимости (TImetabels.BROWSER_HEADERS).
+# Реэкспортируем имя ради обратной совместимости (public_timetable.BROWSER_HEADERS).
 from config import BROWSER_HEADERS
 
 

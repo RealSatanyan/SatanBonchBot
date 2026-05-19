@@ -16,7 +16,7 @@
 устаревшую ссылку/значение.
 
 Направление зависимостей: timetable_service -> lk_client / timetable_cache /
-botcore / TImetabels (вниз по слоям). Модуль НЕ импортирует main на уровне
+botcore / public_timetable (вниз по слоям). Модуль НЕ импортирует main на уровне
 модуля — цикла зависимостей нет.
 """
 import asyncio
@@ -37,12 +37,12 @@ from timetable_cache import (
 
 # Импорт для работы с расписанием без авторизации.
 try:
-    from TImetabels import BonchAPI as TimetableBonchAPI, BROWSER_HEADERS
+    from public_timetable import BonchAPI as TimetableBonchAPI, BROWSER_HEADERS
 except ImportError:
     import os
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from TImetabels import BonchAPI as TimetableBonchAPI, BROWSER_HEADERS
+    from public_timetable import BonchAPI as TimetableBonchAPI, BROWSER_HEADERS
 
 # --- Внутреннее изменяемое состояние сервиса --------------------------------
 # Все четыре переприсваиваются функциями ниже; внешний доступ — только

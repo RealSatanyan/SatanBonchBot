@@ -11,9 +11,8 @@ COPY requirements.txt .
 # Устанавливаем зависимости
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем шрифты явно (включая NotoColorEmoji.ttf)
-COPY *.ttf ./
-COPY *.otf ./
+# Копируем шрифты отдельным слоём (assets/fonts/ — меняются редко, выгодно для кэша)
+COPY assets/ ./assets/
 
 # Копируем исходный код
 COPY . .
