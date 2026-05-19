@@ -28,7 +28,7 @@ class _FakeResponse:
     async def __aexit__(self, *exc):
         return False
 
-    async def text(self):
+    async def text(self, encoding=None, errors="strict"):
         return self._text
 
     async def read(self):
@@ -268,6 +268,9 @@ class _FlakyResponse:
 
     async def read(self):
         return self._body
+
+    async def text(self, encoding=None, errors="strict"):
+        return self._body.decode(encoding or "utf-8", errors=errors)
 
 
 class _ScriptedSession:

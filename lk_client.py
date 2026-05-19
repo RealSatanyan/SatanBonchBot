@@ -91,11 +91,12 @@ async def _lk_fetch(
 ) -> tuple[int, str]:
     """Выполняет HTTP-запрос в ЛК через переданную session с ретраями.
 
-    Возвращает (статус, тело). Тело читается устойчиво — read() + decode с
-    errors='replace' (как в публичном расписании), чтобы усечённый/битый ответ
-    не падал в UnicodeDecodeError. Сетевые сбои, таймауты и ответы 5xx
-    повторяются с экспоненциальным бэкоффом: раньше первая же ошибка сети
-    роняла вход / автоотметку / напоминание — теперь запрос повторяется.
+    Возвращает (статус, тело). Тело декодируется через response.text(): по
+    charset из Content-Type — страницы lk.sut.ru отдаются в cp1251, хардкод
+    utf-8 ломал кириллицу в мойибейк. errors='replace' — устойчивость к
+    усечённому/битому ответу (не падаем в UnicodeDecodeError). Сетевые сбои,
+    таймауты и ответы 5xx повторяются с экспоненциальным бэкоффом: раньше
+    первая же ошибка сети роняла вход / автоотметку / напоминание.
 
     ``idempotent`` — для запросов, которые безопасно повторять (GET, поиск,
     вход). Для НЕидемпотентных (отправка сообщения: повтор после успешного
@@ -119,8 +120,9 @@ async def _lk_fetch(
             async with request(url, proxy=None, **kwargs) as response:
                 status = response.status
                 if read_body:
-                    raw = await response.read()
-                    text = raw.decode("utf-8", errors="replace")
+                    # text() декодирует по charset ответа (lk.sut.ru — cp1251),
+                    # errors='replace' — не падать на усечённом/битом теле.
+                    text = await response.text(errors="replace")
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
             pre_send = isinstance(e, aiohttp.ClientConnectorError)
             if not idempotent and not pre_send:

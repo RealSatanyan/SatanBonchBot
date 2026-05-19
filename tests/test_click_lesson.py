@@ -27,7 +27,7 @@ class _FakeResponse:
     async def __aexit__(self, *exc):
         return False
 
-    async def text(self):
+    async def text(self, encoding=None, errors="strict"):
         return self._text
 
     async def read(self):
