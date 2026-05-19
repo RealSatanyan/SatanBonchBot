@@ -22,7 +22,7 @@ from keyboards import cancel_kb, get_teacher_week_navigation_buttons
 from lk_client import TimetableBonchAPI
 import timetable_service
 from timetable_service import get_all_groups_timetable
-from formatting import format_timetable_dict
+from formatting import format_timetable_dict, merge_lessons_by_groups
 
 router = Router()
 
@@ -61,7 +61,9 @@ async def process_teacher_week_navigation(callback_query: CallbackQuery):
             return
 
         # Фильтруем по преподавателю
-        teacher_timetable = TimetableBonchAPI.teacher_timetable(timetable_service.all_groups_timetable_cache, teacher_name)
+        teacher_timetable = merge_lessons_by_groups(
+            TimetableBonchAPI.teacher_timetable(timetable_service.all_groups_timetable_cache, teacher_name)
+        )
 
         if not teacher_timetable:
             await callback_query.answer(f"Не найдено занятий для преподавателя: {teacher_name}", show_alert=True)
@@ -121,7 +123,9 @@ async def cmd_teacher_timetable(message: types.Message, override: str = None):
                     pass
 
         # Используем статический метод для фильтрации по преподавателю
-        teacher_timetable = TimetableBonchAPI.teacher_timetable(all_timetable, teacher_name)
+        teacher_timetable = merge_lessons_by_groups(
+            TimetableBonchAPI.teacher_timetable(all_timetable, teacher_name)
+        )
 
         if not teacher_timetable:
             await message.answer(f"❌ Не найдено занятий для преподавателя: {teacher_name}")

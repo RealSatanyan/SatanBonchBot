@@ -436,6 +436,10 @@ def generate_timetable_image_from_dict(timetable: list, title: str = "Распи
         # Преподаватель, кабинет и тип предмета с эмодзи
         info_y = subject_y + 22
         info_parts = []
+        # Слитые группы-потоки (расписание преподавателя/аудитории) — см. B.3.
+        groups = lesson.get('Группы')
+        if groups:
+            info_parts.append(f"👥 {', '.join(groups)}")
         if teacher and teacher != 'Не указано':
             teacher_display = teacher[:18] + "..." if len(teacher) > 18 else teacher
             info_parts.append(f"👤 {teacher_display}")  # Используем простой эмодзи вместо составного
