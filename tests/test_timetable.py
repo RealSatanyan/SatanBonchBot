@@ -172,3 +172,90 @@ def test_get_timetable_once_parses_valid_html(load_fixture):
     result = _get_once(_FakeResponse(200, html.encode("utf-8")))
     assert isinstance(result, list)
     assert len(result) == 4
+
+
+# --- get_groups: защитное чтение списка факультетов/групп --------------------
+
+import aiohttp  # noqa: E402
+
+
+class _FakeGroupsResponse:
+    """Ответ cabinet.sut.ru для get_groups: read() + raise_for_status()."""
+
+    def __init__(self, status=200, body=b""):
+        self.status = status
+        self._body = body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def read(self):
+        return self._body
+
+    def raise_for_status(self):
+        if self.status >= 400:
+            raise aiohttp.ClientError(f"HTTP {self.status}")
+
+
+class _FakeGroupsSession:
+    """Подменяет aiohttp.ClientSession в get_groups — всегда отдаёт заданный ответ."""
+
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def post(self, url, data=None):
+        return self._response
+
+
+def _read_pairs(response):
+    return asyncio.run(BonchAPI._read_id_name_pairs(response))
+
+
+def test_read_id_name_pairs_parses_valid_body():
+    result = _read_pairs(_FakeGroupsResponse(200, "1,Физика;2,Химия".encode("utf-8")))
+    assert result == {"1": "Физика", "2": "Химия"}
+
+
+def test_read_id_name_pairs_survives_non_utf8_body():
+    """Битый ответ списка групп не должен ронять разбор (UnicodeDecodeError)."""
+    result = _read_pairs(_FakeGroupsResponse(200, b"\xff\xfe\x00\xc2 broken"))
+    assert result == {}
+
+
+def test_read_id_name_pairs_handles_http_error():
+    """HTTP-ошибка на списке групп гасится в пустой словарь, а не пробрасывается."""
+    assert _read_pairs(_FakeGroupsResponse(503, b"")) == {}
+
+
+def test_get_groups_survives_broken_faculties_response(monkeypatch):
+    """Битый ответ на список факультетов → get_groups не падает с трейсбеком."""
+    broken = _FakeGroupsResponse(200, b"\xff\xfe broken")
+    monkeypatch.setattr(
+        "TImetabels.aiohttp.ClientSession",
+        lambda *a, **k: _FakeGroupsSession(broken),
+    )
+    api = BonchAPI("2026-02-03")
+    asyncio.run(api.get_groups())
+    assert api.groups_id == {}
+
+
+def test_get_groups_keeps_previous_groups_when_response_broken(monkeypatch):
+    """Битый ответ не затирает ранее загруженные группы."""
+    broken = _FakeGroupsResponse(200, b"\xff\xfe broken")
+    monkeypatch.setattr(
+        "TImetabels.aiohttp.ClientSession",
+        lambda *a, **k: _FakeGroupsSession(broken),
+    )
+    api = BonchAPI("2026-02-03")
+    api.groups_id = {"7": "ИКВ-11"}
+    asyncio.run(api.get_groups())
+    assert api.groups_id == {"7": "ИКВ-11"}

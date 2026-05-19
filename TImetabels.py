@@ -45,6 +45,25 @@ class BonchAPI:
         """Разбирает ответ cabinet.sut.ru вида 'id1,name1;id2,name2;...' в {id: name}."""
         return parsers.parse_id_name_pairs(text)
 
+    @staticmethod
+    async def _read_id_name_pairs(response) -> dict:
+        """Устойчиво читает ответ cabinet.sut.ru со списком факультетов/групп.
+
+        Под нагрузкой эндпоинт изредка отдаёт битое тело (не декодируется в
+        UTF-8) или HTTP-ошибку. get_groups запускается первым в загрузке
+        расписания — раньше такой ответ ронял весь рефреш с трейсбеком. Читаем
+        байты и декодируем устойчиво (errors='replace'), любую ошибку гасим в
+        пустой словарь с понятным логом — как в фиксе _get_timetable_once.
+        """
+        try:
+            response.raise_for_status()
+            raw = await response.read()
+            text = raw.decode('utf-8', errors='replace')
+            return BonchAPI._parse_id_name_pairs(text)
+        except Exception as e:
+            logging.warning("Не удалось разобрать список факультетов/групп: %s", e)
+            return {}
+
     async def get_groups(self):
         # cabinet.sut.ru отдаёт группы по факультетам через POST-эндпоинт:
         # сначала запрашиваем список факультетов, затем группы каждого факультета.
@@ -52,16 +71,15 @@ class BonchAPI:
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(20), trust_env=True, headers=BROWSER_HEADERS) as session:
             async with session.post(URL, data={'choice': '1', 'type_z': '1', 'kurs': ''}) as response:
-                response.raise_for_status()
-                faculties = self._parse_id_name_pairs(await response.text())
+                faculties = await self._read_id_name_pairs(response)
 
             groups = {}
             for faculty_id in faculties:
                 async with session.post(URL, data={'choice': '1', 'type_z': '1', 'kurs': '', 'faculty': faculty_id}) as response:
-                    response.raise_for_status()
-                    groups.update(self._parse_id_name_pairs(await response.text()))
+                    groups.update(await self._read_id_name_pairs(response))
 
-        self.groups_id = groups
+        # Битый ответ на список групп не должен затирать ранее загруженные группы.
+        self.groups_id = groups or getattr(self, 'groups_id', {})
 
     async def get_timetable(self, session: aiohttp.ClientSession, type_z: str, group_id: str) -> list:
         # cabinet.sut.ru при нагрузке иногда не отдаёт расписание — повторяем до 3 раз.
