@@ -86,7 +86,8 @@ _LK_RETRIES = 3
 
 
 async def _lk_fetch(
-    session, method: str, url: str, *, idempotent: bool = True, **kwargs
+    session, method: str, url: str, *, idempotent: bool = True,
+    read_body: bool = True, **kwargs
 ) -> tuple[int, str]:
     """Выполняет HTTP-запрос в ЛК через переданную session с ретраями.
 
@@ -103,6 +104,11 @@ async def _lk_fetch(
     не ушёл (``aiohttp.ClientConnectorError``); 5xx и неоднозначные сбои
     после отправки не ретраятся, ошибка пробрасывается вызывающему.
 
+    ``read_body=False`` — когда нужен только статус (этапы логина: открытие
+    кабинета, ?login=no/yes). Тело тогда НЕ вычитывается: страница ЛК после
+    входа большая/отдаётся медленно, и `response.read()` на ней может висеть
+    до таймаута — а тело там не нужно. Возвращается пустая строка.
+
     proxy=None, заголовки, таймаут и cookie_jar берутся из переданной session;
     семафор ЛК (get_lk_semaphore) остаётся за вызывающим кодом.
     """
@@ -112,8 +118,9 @@ async def _lk_fetch(
         try:
             async with request(url, proxy=None, **kwargs) as response:
                 status = response.status
-                raw = await response.read()
-                text = raw.decode("utf-8", errors="replace")
+                if read_body:
+                    raw = await response.read()
+                    text = raw.decode("utf-8", errors="replace")
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
             pre_send = isinstance(e, aiohttp.ClientConnectorError)
             if not idempotent and not pre_send:
@@ -201,14 +208,17 @@ class DebuggableBonchAPI(BonchAPI):
                 ) as session:
                     # Инициализируем сессию (получаем куки). Каждый запрос —
                     # через _lk_fetch: ретраи при сетевом сбое/5xx, устойчивое чтение.
-                    status, body = await _lk_fetch(session, "GET", CABINET)
+                    # На этапах логина нужен только статус (куки берутся из
+                    # заголовков ответа) — тело не вычитываем (read_body=False),
+                    # иначе чтение большой страницы кабинета может висеть.
+                    status, body = await _lk_fetch(session, "GET", CABINET, read_body=False)
                     if status >= 400:
                         logging.error("HTTP %s при открытии CABINET для %s. Тело: %s",
                                       status, email, body[:500])
                         return False
 
                     # Некоторым конфигурациям lk нужен ?login=no, оставляем как доп. шаг
-                    status, body = await _lk_fetch(session, "GET", f"{CABINET}?login=no")
+                    status, body = await _lk_fetch(session, "GET", f"{CABINET}?login=no", read_body=False)
                     if status >= 400:
                         logging.error("HTTP %s при открытии CABINET?login=no для %s. Тело: %s",
                                       status, email, body[:500])
@@ -223,7 +233,7 @@ class DebuggableBonchAPI(BonchAPI):
                     # Обрезаем пробелы и переносы строк, так как сервер может возвращать '\n1' вместо '1'
                     text_clean = (text or "").strip()
                     if text_clean == "1":
-                        status, body = await _lk_fetch(session, "GET", f"{CABINET}?login=yes")
+                        status, body = await _lk_fetch(session, "GET", f"{CABINET}?login=yes", read_body=False)
                         if status >= 400:
                             logging.error("HTTP %s при открытии CABINET?login=yes для %s. Тело: %s",
                                           status, email, body[:500])

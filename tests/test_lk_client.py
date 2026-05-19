@@ -362,6 +362,26 @@ def test_lk_fetch_decodes_broken_body_without_crash(monkeypatch):
     assert isinstance(text, str)
 
 
+def test_lk_fetch_skips_body_when_read_body_false():
+    """read_body=False — тело НЕ вычитывается (этапам логина нужен только статус).
+
+    Регрессия A.1: страница ЛК после входа (?login=yes) большая/отдаётся
+    медленно, response.read() на ней висел до таймаута — а тело там не нужно.
+    """
+    class _ExplodingReadResponse(_FlakyResponse):
+        async def read(self):
+            raise AssertionError("read() не должен вызываться при read_body=False")
+
+    session = _ScriptedSession([_ExplodingReadResponse(200, b"unused")])
+
+    status, text = asyncio.run(
+        lk_client._lk_fetch(session, "GET", "https://lk", read_body=False)
+    )
+
+    assert status == 200
+    assert text == ""
+
+
 # --- login: устойчивость к сетевому сбою (частичный сбой) --------------------
 
 def test_login_succeeds_after_transient_network_error(monkeypatch):
