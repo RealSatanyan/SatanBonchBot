@@ -2,7 +2,8 @@
 
 Задача 4.1, шаг 9 — чистая декомпозиция main.py без изменения поведения.
 
-Лист графа зависимостей: только stdlib + PIL. Не импортирует проектные модули.
+Зависит из проектных модулей только от чистого L2 (formatting, parsers) —
+для обогащения личной картинки полным ФИО преподавателя (задача B.2).
 Шрифты (`G8.otf`, `Montserrat-SemiBold.ttf`, `seguiemj.ttf`, `OpenSansEmoji.ttf`)
 лежат в `assets/fonts/` и грузятся через _font_path() — путь строится от
 расположения этого модуля, не зависит от рабочей директории.
@@ -16,6 +17,9 @@ from datetime import datetime
 
 from PIL import Image, ImageDraw, ImageFont
 
+from formatting import _build_full_name_index, resolve_teacher_full_name
+from parsers import split_room_building
+
 _FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "fonts")
 
 
@@ -24,10 +28,32 @@ def _font_path(name: str) -> str:
     return os.path.join(_FONTS_DIR, name)
 
 
-def generate_timetable_image(timetable) -> str:
+def _format_personal_lesson_info(lesson, full_name_index: dict) -> str:
+    """Текст одного занятия личного расписания для картинки.
+
+    Полное ФИО берётся из расписания группы (задача B.2; фолбэк — краткое),
+    корпус разбивается из location — как в текстовом format_timetable.
+    """
+    teacher = resolve_teacher_full_name(lesson, full_name_index)
+    room, building = split_room_building(lesson.location)
+    room_line = f"🏫 {room}"
+    if building:
+        room_line += f" · корпус {building}"
+    return (
+        f"⏰ {lesson.time}\n"
+        f"📚 {lesson.subject}\n"
+        f"🎓 {teacher}\n"
+        f"{room_line}\n"
+        f"🔹 Тип: {lesson.lesson_type}\n"
+    )
+
+
+def generate_timetable_image(timetable, group_timetable=None) -> str:
     """
     Генерирует изображение с расписанием.
-    :param timetable: Список занятий.
+    :param timetable: Список занятий (объекты личного расписания ЛК).
+    :param group_timetable: Расписание группы пользователя для обогащения
+        полным ФИО преподавателя (задача B.2); None — без обогащения.
     :return: Путь к сохраненному изображению.
     """
     # Размеры изображения
@@ -53,6 +79,9 @@ def generate_timetable_image(timetable) -> str:
     x_left = 10  # Левый столбик
     x_right = width // 2 + 10  # Правый столбик
     y = 10
+
+    # Индекс полных ФИО из расписания группы (личная страница ЛК их не содержит).
+    full_name_index = _build_full_name_index(group_timetable)
 
     # Группируем занятия по дням
     days = {}
@@ -86,13 +115,7 @@ def generate_timetable_image(timetable) -> str:
 
             # Отображаем занятия
             for lesson in day_lessons:
-                lesson_info = (
-                    f"⏰ {lesson.time}\n"
-                    f"📚 {lesson.subject}\n"
-                    f"🎓 {lesson.teacher}\n"
-                    f"🏫 {lesson.location}\n"
-                    f"🔹 Тип: {lesson.lesson_type}\n"
-                )
+                lesson_info = _format_personal_lesson_info(lesson, full_name_index)
                 y_left = draw_lesson(draw, lesson_info, x_left, y_left, text_font, emoji_font, width // 2 - 20)
                 y_left += 10  # Отступ между занятиями
 
@@ -115,13 +138,7 @@ def generate_timetable_image(timetable) -> str:
 
             # Отображаем занятия
             for lesson in day_lessons:
-                lesson_info = (
-                    f"⏰ {lesson.time}\n"
-                    f"📚 {lesson.subject}\n"
-                    f"🎓 {lesson.teacher}\n"
-                    f"🏫 {lesson.location}\n"
-                    f"🔹 Тип: {lesson.lesson_type}\n"
-                )
+                lesson_info = _format_personal_lesson_info(lesson, full_name_index)
                 y_right = draw_lesson(draw, lesson_info, x_right, y_right, text_font, emoji_font, width // 2 - 20)
                 y_right += 10  # Отступ между занятиями
 

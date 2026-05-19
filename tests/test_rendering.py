@@ -10,7 +10,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from rendering import generate_timetable_image, generate_timetable_image_from_dict
+from rendering import (
+    generate_timetable_image,
+    generate_timetable_image_from_dict,
+    _format_personal_lesson_info,
+)
+from formatting import _build_full_name_index
 
 
 def _lesson(**overrides):
@@ -113,4 +118,45 @@ def test_generate_timetable_image_personal_format(cleanup_personal_image):
         _personal_lesson("Вторник", date="2026-05-19", subject="Сети"),
     ]
     path = generate_timetable_image(timetable)
+    _assert_nonempty_png(path)
+
+
+# --- B.2: обогащение картинки личного расписания полным ФИО ------------------
+
+def test_personal_lesson_info_uses_full_name_from_group():
+    """В картинке подставляется полное ФИО из расписания группы + корпус."""
+    lesson = _personal_lesson(
+        "Понедельник", time="13:00-14:35", subject="Физика",
+        teacher="Иванов И.И.", location="214; Б22/1",
+    )
+    index = _build_full_name_index([{
+        "День недели": "Понедельник", "Время занятия": "13:00-14:35",
+        "Предмет": "Физика", "ФИО преподавателя (полное)": "Иванов Иван Иванович",
+    }])
+
+    info = _format_personal_lesson_info(lesson, index)
+
+    assert "Иванов Иван Иванович" in info
+    assert "корпус Б22/1" in info
+
+
+def test_personal_lesson_info_falls_back_to_short_name():
+    """Без совпадения в расписании группы остаётся краткое ФИО."""
+    lesson = _personal_lesson("Понедельник", teacher="Петров П.П.")
+
+    info = _format_personal_lesson_info(lesson, {})
+
+    assert "Петров П.П." in info
+
+
+def test_generate_timetable_image_accepts_group_timetable(cleanup_personal_image):
+    """generate_timetable_image принимает расписание группы и не падает."""
+    timetable = [_personal_lesson("Понедельник")]
+    group = [{
+        "День недели": "Понедельник", "Время занятия": "09:00-10:35",
+        "Предмет": "Базы данных", "ФИО преподавателя (полное)": "Иванов Иван Иванович",
+    }]
+
+    path = generate_timetable_image(timetable, group_timetable=group)
+
     _assert_nonempty_png(path)

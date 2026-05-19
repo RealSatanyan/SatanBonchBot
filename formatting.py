@@ -71,6 +71,22 @@ def _build_full_name_index(group_timetable) -> dict:
     return index
 
 
+def resolve_teacher_full_name(lesson, full_name_index: dict) -> str:
+    """Полное ФИО преподавателя занятия личного расписания.
+
+    Ищет в индексе по (день недели, время, предмет); фолбэк — краткое ФИО с
+    личной страницы ЛК (lesson.teacher). Используется и текстовым форматом
+    (format_timetable), и картинкой (rendering.generate_timetable_image) —
+    единая логика сопоставления, без расхождений.
+    """
+    key = (
+        (lesson.day or '').strip(),
+        _lesson_key_digits(lesson.time),
+        (lesson.subject or '').strip(),
+    )
+    return full_name_index.get(key) or lesson.teacher
+
+
 def format_timetable(timetable, title: str = "Ваше расписание", group_timetable=None) -> str:
     """
     Форматирует список занятий в читаемый текст.
@@ -102,12 +118,7 @@ def format_timetable(timetable, title: str = "Ваше расписание", gr
     for date, lessons in sorted_days:
         formatted_timetable += f"----------------------\n📌 *{date} ({lessons[0].day})*\n"
         for lesson in lessons:
-            key = (
-                (lesson.day or '').strip(),
-                _lesson_key_digits(lesson.time),
-                (lesson.subject or '').strip(),
-            )
-            teacher = full_name_index.get(key) or lesson.teacher
+            teacher = resolve_teacher_full_name(lesson, full_name_index)
             room, building = split_room_building(lesson.location)
             room_line = f"🏫 {room}"
             if building:

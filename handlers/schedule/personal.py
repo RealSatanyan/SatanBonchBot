@@ -60,8 +60,10 @@ async def process_image_week(callback_query: CallbackQuery):
         # Получаем расписание для выбранной недели
         timetable = await lk_client.apis[user_id].get_timetable(week_offset=week_offset)
 
-        # Генерируем изображение
-        image_path = generate_timetable_image(timetable)
+        # Генерируем изображение (с обогащением полным ФИО — задача B.2)
+        image_path = generate_timetable_image(
+            timetable, group_timetable=_user_group_timetable(user_id)
+        )
 
         # Проверяем, что файл существует
         if not os.path.exists(image_path):
