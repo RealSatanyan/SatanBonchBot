@@ -1,5 +1,5 @@
 """Тесты форматирования расписания и клавиатур навигации по неделям."""
-import main
+from satanbonchbot import main
 
 
 LESSON = {

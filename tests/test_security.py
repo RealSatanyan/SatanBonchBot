@@ -3,8 +3,8 @@ import time as _time
 
 from cryptography.fernet import Fernet
 
-import main
-import security
+from satanbonchbot import main
+from satanbonchbot import security
 
 
 # --- encrypt_password / decrypt_password -------------------------------------

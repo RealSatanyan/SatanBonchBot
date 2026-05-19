@@ -14,8 +14,8 @@ from aiogram import Router, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 
-from states import UIStates
-from keyboards import (
+from satanbonchbot.states import  UIStates
+from satanbonchbot.keyboards import  (
     BTN_SCHEDULE,
     BTN_AUTOCLICK,
     BTN_MESSAGES,
@@ -29,17 +29,17 @@ from keyboards import (
     messages_menu_kb,
     profile_menu_kb,
 )
-from db import is_registered, get_notify_settings
-import db
-import lk_client
-from timetable_cache import _format_cache_age, _timetable_cache_age_now
-from login_service import (
+from satanbonchbot.db import  is_registered, get_notify_settings
+from satanbonchbot import db
+from satanbonchbot import lk_client
+from satanbonchbot.timetable_cache import  _format_cache_age, _timetable_cache_age_now
+from satanbonchbot.login_service import  (
     perform_login,
     parse_login_credentials,
     EMAIL_RE,
 )
-from security import check_login_rate_limit, format_retry_after
-from handlers.autoclick import send_autoclick_panel
+from satanbonchbot.security import  check_login_rate_limit, format_retry_after
+from satanbonchbot.handlers.autoclick import  send_autoclick_panel
 
 router = Router()
 

@@ -1,7 +1,7 @@
 """Тесты мониторинга сбоев парсера ЛК: скользящее окно, порог, cooldown."""
 from datetime import datetime, timedelta
 
-import main
+from satanbonchbot import main
 
 BASE = datetime(2026, 5, 18, 12, 0)
 

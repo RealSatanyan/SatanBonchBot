@@ -20,7 +20,7 @@
 
 from aiogram import Router
 
-from handlers.schedule import personal, group, teacher, room, common
+from satanbonchbot.handlers.schedule import  personal, group, teacher, room, common
 
 router = Router()
 router.include_router(personal.router)

@@ -10,10 +10,10 @@ from pathlib import Path
 
 import pytest
 
-import db
-import lesson_controller
-import lk_client
-from lesson_controller import LessonController
+from satanbonchbot import db
+from satanbonchbot import lesson_controller
+from satanbonchbot import lk_client
+from satanbonchbot.lesson_controller import  LessonController
 
 
 class _FakeApi:

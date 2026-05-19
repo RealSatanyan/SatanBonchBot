@@ -2,7 +2,7 @@
 import asyncio
 from datetime import datetime, time
 
-import main
+from satanbonchbot import main
 
 
 def _controller():

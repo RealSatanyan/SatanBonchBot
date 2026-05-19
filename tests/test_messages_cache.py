@@ -1,5 +1,5 @@
 """Тесты счётчика сообщений и тёплого кэша списка /messages."""
-import main
+from satanbonchbot import main
 
 
 # --- format_message_count ----------------------------------------------------

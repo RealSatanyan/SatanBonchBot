@@ -11,13 +11,13 @@ from aiogram import Router, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 
-from botcore import bot
-from keyboards import login_prompt_kb, autoclick_menu_kb
-from db import set_autoclick_enabled
-import db
-import lk_client
-import lesson_controller
-from login_service import auto_login_user
+from satanbonchbot.botcore import  bot
+from satanbonchbot.keyboards import  login_prompt_kb, autoclick_menu_kb
+from satanbonchbot.db import  set_autoclick_enabled
+from satanbonchbot import db
+from satanbonchbot import lk_client
+from satanbonchbot import lesson_controller
+from satanbonchbot.login_service import  auto_login_user
 
 router = Router()
 

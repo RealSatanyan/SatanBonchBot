@@ -2,7 +2,7 @@
 import logging
 import time
 
-import main
+from satanbonchbot import main
 
 
 # --- _resolve_log_level ------------------------------------------------------

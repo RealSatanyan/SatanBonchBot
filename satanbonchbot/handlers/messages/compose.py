@@ -19,8 +19,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 # InlineKeyboardMarkup / InlineKeyboardButton импортируются локально в cmd_send_lk.
 
-from states import UIStates
-from keyboards import (
+from satanbonchbot.states import  UIStates
+from satanbonchbot.keyboards import  (
     login_prompt_kb,
     cancel_kb,
     main_menu_kb,
@@ -28,16 +28,16 @@ from keyboards import (
     file_skip_kb,
     recipients_page_kb,
 )
-from db import is_registered
-from lk_messages import (
+from satanbonchbot.db import  is_registered
+from satanbonchbot.lk_messages import  (
     get_message_api,
     lk_search_recipients,
     lk_send_message,
     lk_upload_file,
     LK_MAX_FILE_SIZE_MB,
 )
-import messages_service
-from messages_service import _invalidate_messages_cache
+from satanbonchbot import messages_service
+from satanbonchbot.messages_service import  _invalidate_messages_cache
 
 router = Router()
 

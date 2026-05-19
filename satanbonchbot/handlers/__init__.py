@@ -12,6 +12,6 @@ aiogram Router; main.py подключает их через dp.include_router()
 - profile  — профиль (уведомления, повторный вход, выход)
 """
 
-from handlers import common, schedule, autoclick, messages, profile
+from satanbonchbot.handlers import  common, schedule, autoclick, messages, profile
 
 __all__ = ["common", "schedule", "autoclick", "messages", "profile"]

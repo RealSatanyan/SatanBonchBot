@@ -17,8 +17,8 @@ from datetime import datetime
 
 from PIL import Image, ImageDraw, ImageFont
 
-from formatting import _build_full_name_index, resolve_teacher_full_name
-from parsers import split_room_building
+from satanbonchbot.formatting import  _build_full_name_index, resolve_teacher_full_name
+from satanbonchbot.parsers import  split_room_building
 
 _FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "fonts")
 

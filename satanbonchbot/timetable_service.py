@@ -25,12 +25,12 @@ from datetime import datetime
 
 import pytz
 
-import db
-from botcore import bot
-import lk_client
-from lk_client import get_timetable_api
-from config import TIMETABLE_REFRESH_HOURS, GROUP_REDETECT_HOURS
-from timetable_cache import (
+from satanbonchbot import db
+from satanbonchbot.botcore import  bot
+from satanbonchbot import lk_client
+from satanbonchbot.lk_client import  get_timetable_api
+from satanbonchbot.config import  TIMETABLE_REFRESH_HOURS, GROUP_REDETECT_HOURS
+from satanbonchbot.timetable_cache import  (
     _write_timetable_meta,
     _is_timetable_stale,
     _timetable_cache_age_now,
@@ -38,13 +38,7 @@ from timetable_cache import (
 )
 
 # Импорт для работы с расписанием без авторизации.
-try:
-    from public_timetable import BonchAPI as TimetableBonchAPI, BROWSER_HEADERS
-except ImportError:
-    import os
-    import sys
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from public_timetable import BonchAPI as TimetableBonchAPI, BROWSER_HEADERS
+from satanbonchbot.public_timetable import BonchAPI as TimetableBonchAPI, BROWSER_HEADERS
 
 # --- Внутреннее изменяемое состояние сервиса --------------------------------
 # Все четыре переприсваиваются функциями ниже; внешний доступ — только
@@ -332,7 +326,7 @@ async def _redetect_user_groups() -> None:
     срабатывает только если группа ещё не известна. Запросы в ЛК стагерим,
     ошибки гасит сам detect_user_group.
     """
-    import login_service
+    from satanbonchbot import login_service
 
     user_ids = list(lk_client.apis.keys())
     if not user_ids:

@@ -1,7 +1,7 @@
 """Тесты TTL-кэша расписания групп: метаданные, возраст, устаревание."""
 from datetime import datetime, timedelta, timezone
 
-import main
+from satanbonchbot import main
 
 UTC = timezone.utc
 

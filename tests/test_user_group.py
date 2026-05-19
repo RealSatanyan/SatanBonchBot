@@ -5,9 +5,9 @@
 """
 import asyncio
 
-import db
-import parsers
-from login_service import detect_user_group
+from satanbonchbot import db
+from satanbonchbot import parsers
+from satanbonchbot.login_service import  detect_user_group
 
 
 RASPISANIE_HTML = """

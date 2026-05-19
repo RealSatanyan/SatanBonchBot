@@ -8,7 +8,7 @@ Telegram-сессия создаётся БЕЗ прокси (прокси ну�
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 
-from config import BOT_TOKEN
+from satanbonchbot.config import  BOT_TOKEN
 
 # Telegram-сессия БЕЗ прокси.
 tg_session = AiohttpSession()

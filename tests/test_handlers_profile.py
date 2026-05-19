@@ -7,9 +7,9 @@
 import asyncio
 from types import SimpleNamespace
 
-import db
-import lk_client
-from handlers.profile import (
+from satanbonchbot import db
+from satanbonchbot import lk_client
+from satanbonchbot.handlers.profile import  (
     cb_notify_toggle,
     cb_notify_minutes,
     cb_logout,

@@ -55,7 +55,7 @@ def temp_db():
     в main.py обращаются к ним как db.conn / db.cursor, поэтому подмена этих
     модульных глобалей видна и в db.py, и в main.py.
     """
-    import db
+    from satanbonchbot import db
 
     test_conn = sqlite3.connect(":memory:")
     test_conn.execute(USERS_SCHEMA)
@@ -74,7 +74,7 @@ def temp_db():
 @pytest.fixture
 def reset_rate_limit():
     """Очищает in-memory счётчик попыток входа до и после теста."""
-    import security
+    from satanbonchbot import security
 
     security._login_attempts.clear()
     yield
@@ -89,8 +89,8 @@ def reset_registries():
     perform_login / auto_login_user регистрируют в них API-инстансы и
     контроллеры; фикстура восстанавливает исходное содержимое после теста.
     """
-    import lk_client
-    import lesson_controller
+    from satanbonchbot import lk_client
+    from satanbonchbot import lesson_controller
 
     apis_backup = dict(lk_client.apis)
     controllers_backup = dict(lesson_controller.controllers)
@@ -114,7 +114,7 @@ def reset_timetable_service():
     timetable_progress_users, timetable_progress) переприсваивается функциями
     сервиса — без изоляции тесты влияли бы друг на друга.
     """
-    import timetable_service as ts
+    from satanbonchbot import timetable_service as ts
 
     backup = (
         ts.all_groups_timetable_cache,
@@ -139,7 +139,7 @@ def reset_timetable_service():
 @pytest.fixture
 def reset_message_states():
     """Изолирует messages_service.message_states между тестами."""
-    import messages_service
+    from satanbonchbot import messages_service
 
     backup = dict(messages_service.message_states)
     messages_service.message_states.clear()

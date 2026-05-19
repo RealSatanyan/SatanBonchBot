@@ -6,7 +6,7 @@ reset_timetable_service.
 """
 import asyncio
 
-from timetable_service import get_all_groups_timetable, send_progress_update
+from satanbonchbot.timetable_service import  get_all_groups_timetable, send_progress_update
 
 
 SAMPLE = {"ИКВ-11": [{"Предмет": "Физика"}], "ИКВ-12": [{"Предмет": "Химия"}]}
@@ -261,7 +261,7 @@ def test_all_groups_timetable_with_progress_collects_all_groups(monkeypatch, res
 
 # --- A.3: фоновый рефреш + переопределение групп -----------------------------
 
-from timetable_service import _group_redetect_every_ticks
+from satanbonchbot.timetable_service import  _group_redetect_every_ticks
 
 
 async def _no_sleep(*a, **kw):
@@ -283,9 +283,9 @@ def test_group_redetect_every_ticks_rounds_to_nearest():
 
 
 def test_redetect_user_groups_calls_detect_for_each_authorized_user(monkeypatch, reset_registries):
-    import lk_client
-    import login_service
-    import timetable_service as ts
+    from satanbonchbot import lk_client
+    from satanbonchbot import login_service
+    from satanbonchbot import timetable_service as ts
 
     lk_client.apis[101] = object()
     lk_client.apis[202] = object()
@@ -304,8 +304,8 @@ def test_redetect_user_groups_calls_detect_for_each_authorized_user(monkeypatch,
 
 
 def test_redetect_user_groups_noop_without_authorized_users(monkeypatch, reset_registries):
-    import login_service
-    import timetable_service as ts
+    from satanbonchbot import login_service
+    from satanbonchbot import timetable_service as ts
 
     detected = []
 
@@ -321,7 +321,7 @@ def test_redetect_user_groups_noop_without_authorized_users(monkeypatch, reset_r
 
 def test_periodic_refresh_tick_refreshes_every_tick_without_redetect(monkeypatch):
     """Не каждый тик переопределяет группы — на промежуточном тике только рефреш."""
-    import timetable_service as ts
+    from satanbonchbot import timetable_service as ts
     calls = {"refresh": 0, "redetect": 0}
 
     async def _fake_refresh():
@@ -340,7 +340,7 @@ def test_periodic_refresh_tick_refreshes_every_tick_without_redetect(monkeypatch
 
 def test_periodic_refresh_tick_redetects_groups_on_schedule(monkeypatch):
     """На кратном тике рефреш сопровождается переопределением групп."""
-    import timetable_service as ts
+    from satanbonchbot import timetable_service as ts
     calls = {"refresh": 0, "redetect": 0}
 
     async def _fake_refresh():

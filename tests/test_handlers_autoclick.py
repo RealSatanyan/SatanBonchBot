@@ -6,9 +6,9 @@ lk_client.apis изолируются reset_registries, БД — temp_db.
 import asyncio
 from types import SimpleNamespace
 
-import db
-import lesson_controller
-from handlers.autoclick import cb_autoclick
+from satanbonchbot import db
+from satanbonchbot import lesson_controller
+from satanbonchbot.handlers.autoclick import  cb_autoclick
 
 
 class FakeController:
@@ -107,7 +107,7 @@ def test_autoclick_menu_unauthorized_prompts_login(monkeypatch, temp_db, reset_r
     async def _fail_autologin(user_id):
         return False
 
-    monkeypatch.setattr("handlers.autoclick.auto_login_user", _fail_autologin)
+    monkeypatch.setattr("satanbonchbot.handlers.autoclick.auto_login_user", _fail_autologin)
     cb = FakeCallbackQuery(data="m:auto:start", user_id=1)
 
     asyncio.run(cb_autoclick(cb, FakeState()))
@@ -117,7 +117,7 @@ def test_autoclick_menu_unauthorized_prompts_login(monkeypatch, temp_db, reset_r
 
 # --- команды автоотметки -----------------------------------------------------
 
-from handlers.autoclick import (  # noqa: E402
+from satanbonchbot.handlers.autoclick import  (  # noqa: E402
     cmd_start_lesson,
     cmd_stop_lesson,
     cmd_status,
@@ -139,7 +139,7 @@ def test_cmd_start_lesson_unauthorized_prompts_login(monkeypatch, reset_registri
     async def _fail_autologin(user_id):
         return False
 
-    monkeypatch.setattr("handlers.autoclick.auto_login_user", _fail_autologin)
+    monkeypatch.setattr("satanbonchbot.handlers.autoclick.auto_login_user", _fail_autologin)
     msg = FakeMessage(user_id=1)
 
     asyncio.run(cmd_start_lesson(msg))
@@ -191,7 +191,7 @@ def test_cmd_status_reports_controller_status(reset_registries):
 
 def test_cmd_test_notify_sends_via_bot(monkeypatch):
     fake_bot = FakeBot()
-    monkeypatch.setattr("handlers.autoclick.bot", fake_bot)
+    monkeypatch.setattr("satanbonchbot.handlers.autoclick.bot", fake_bot)
     msg = FakeMessage(user_id=1)
 
     asyncio.run(cmd_test_notify(msg))
@@ -210,7 +210,7 @@ def test_cmd_my_account_without_saved_account(temp_db, reset_registries):
 
 def test_send_autoclick_panel_shows_status(monkeypatch, reset_registries):
     fake_bot = FakeBot()
-    monkeypatch.setattr("handlers.autoclick.bot", fake_bot)
+    monkeypatch.setattr("satanbonchbot.handlers.autoclick.bot", fake_bot)
     lesson_controller.controllers[1] = FakeController(is_running=True)
 
     asyncio.run(send_autoclick_panel(1, chat_id=555))

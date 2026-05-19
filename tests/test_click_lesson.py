@@ -10,8 +10,8 @@ from datetime import datetime
 
 import pytest
 
-import lk_client
-import main
+from satanbonchbot import lk_client
+from satanbonchbot import main
 
 
 class _FakeResponse:

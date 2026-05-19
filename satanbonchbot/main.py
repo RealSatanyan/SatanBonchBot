@@ -16,9 +16,9 @@ from aiogram.types import BotCommand
 # фасадом — реэкспортит перенесённые имена, чтобы main.X и тесты работали.
 # Импорт config выполняется здесь, рано, чтобы его import-side-effects
 # (load_dotenv / настройка логирования / прокси) отработали до создания Bot/БД.
-import config
-from config import *
-from config import (
+from satanbonchbot import config
+from satanbonchbot.config import  *
+from satanbonchbot.config import  (
     _LK_SEMAPHORE_BY_LOOP,
     _LOG_LEVEL,
     _resolve_log_level,
@@ -31,17 +31,17 @@ from config import (
 # security.py читает ENCRYPTION_KEY из окружения при импорте, а load_dotenv()
 # отрабатывает в config.py. Приватные имена (_fernet, _login_attempts) не
 # попадают под `import *` — импортируем их явно.
-import security
-from security import *
-from security import _fernet, _login_attempts
+from satanbonchbot import security
+from satanbonchbot.security import  *
+from satanbonchbot.security import  _fernet, _login_attempts
 
 # Работа с БД извлечена в db.py (задача 4.1, шаг 4). main.py остаётся фасадом —
 # реэкспортит DB-хелперы. Импорт идёт ПОСЛЕ security: db.py при импорте делает
 # side-effects (sqlite3.connect + CREATE TABLE / миграции). conn/cursor НЕ
 # реэкспортируются именами — main.py обращается к ним как db.conn / db.cursor,
 # чтобы подмена БД в тестовой фикстуре temp_db была видна.
-import db
-from db import (
+from satanbonchbot import db
+from satanbonchbot.db import  (
     is_registered,
     get_notify_settings,
     set_notify_enabled,
@@ -60,23 +60,23 @@ from db import (
 # HELP_TEXT, get_*_navigation_buttons, notify_settings_text, NOTIFY_MINUTE_OPTIONS,
 # RECIPIENTS_PER_PAGE), чтобы хэндлеры и тесты обращались к ним как main.<имя>.
 # keyboards.py — чистый модуль без side-effects, main НЕ импортирует.
-import keyboards
-from keyboards import *
+from satanbonchbot import keyboards
+from satanbonchbot.keyboards import  *
 
 # Мониторинг сбоёв парсера ЛК извлечён в monitoring.py (задача 4.1, шаг 6).
 # main.py остаётся фасадом — реэкспортит перенесённые имена. Приватные имена
 # (_parser_failure_monitor, _alert_admins_parser_broken, _note_parser_failure)
 # не попадают под `import *` — импортируем их явно.
-import monitoring
-from monitoring import *
-from monitoring import (
+from satanbonchbot import monitoring
+from satanbonchbot.monitoring import  *
+from satanbonchbot.monitoring import  (
     _parser_failure_monitor,
     _alert_admins_parser_broken,
     _note_parser_failure,
 )
-import timetable_cache
-from timetable_cache import *
-from timetable_cache import (
+from satanbonchbot import timetable_cache
+from satanbonchbot.timetable_cache import  *
+from satanbonchbot.timetable_cache import  (
     _write_timetable_meta,
     _read_timetable_meta,
     _timetable_age_seconds,
@@ -85,15 +85,15 @@ from timetable_cache import (
     _timetable_cache_age_now,
 )
 
-import formatting
-from formatting import *
-from formatting import _week_offset_for_date, _moscow_today
+from satanbonchbot import formatting
+from satanbonchbot.formatting import  *
+from satanbonchbot.formatting import  _week_offset_for_date, _moscow_today
 
 # Генерация PNG-изображений расписания извлечена в rendering.py
 # (задача 4.1, шаг 9). main.py остаётся фасадом — реэкспортит публичные имена.
-import rendering
-from rendering import *
-from rendering import (
+from satanbonchbot import rendering
+from satanbonchbot.rendering import  *
+from satanbonchbot.rendering import  (
     draw_rounded_rectangle,
     draw_lesson,
     draw_text_with_emoji,
@@ -105,14 +105,14 @@ from rendering import (
 # попадает под `import *` — импортируем явно. Разделяемое состояние
 # apis/timetable_api живёт в lk_client и доступно как lk_client.apis /
 # lk_client.timetable_api (модуль-квалифицированный доступ).
-import lk_client
-from lk_client import *
-from lk_client import _prune_debug_dumps
+from satanbonchbot import lk_client
+from satanbonchbot.lk_client import  *
+from satanbonchbot.lk_client import  _prune_debug_dumps
 
 # Домен сообщений ЛК вынесен в lk_messages.py (задача B.2 фазы 5) —
 # get_message_api, lk_search_recipients/upload/send. main.py реэкспортит их.
-import lk_messages
-from lk_messages import *
+from satanbonchbot import lk_messages
+from satanbonchbot.lk_messages import  *
 
 # Контроллер автоотметки занятий (LessonController) извлечён в
 # lesson_controller.py (задача 4.1, шаг 11). main.py остаётся фасадом —
@@ -121,8 +121,8 @@ from lk_messages import *
 # Реестр контроллеров `controllers` НЕ реэкспортируется именем — main.py
 # обращается к нему как lesson_controller.controllers (модуль-квалифицированный
 # доступ), чтобы переприсваивания/мутации словаря были видны всем.
-import lesson_controller
-from lesson_controller import LessonController
+from satanbonchbot import lesson_controller
+from satanbonchbot.lesson_controller import  LessonController
 
 # Сервис загрузки расписания всех групп извлечён в timetable_service.py
 # (задача 4.1, шаг 12b). main.py остаётся фасадом — реэкспортит публичные
@@ -131,8 +131,8 @@ from lesson_controller import LessonController
 # timetable_progress_users) НЕ реэкспортируется именами — main.py обращается
 # к нему как timetable_service.<имя> (модуль-квалифицированный доступ), т.к.
 # эти переменные переприсваиваются на уровне модуля сервиса.
-import timetable_service
-from timetable_service import (
+from satanbonchbot import timetable_service
+from satanbonchbot.timetable_service import  (
     all_groups_timetable_with_progress,
     send_progress_update,
     progress_updater,
@@ -149,8 +149,8 @@ from timetable_service import (
 # обращается к нему как messages_service.<имя> (модуль-квалифицированный
 # доступ), т.к. эти словари читаются/пишутся хэндлерами и их мутации должны
 # быть видны всем.
-import messages_service
-from messages_service import (
+from satanbonchbot import messages_service
+from satanbonchbot.messages_service import  (
     MESSAGES_CACHE_TTL_SEC,
     show_message_list,
     format_message_count,
@@ -167,8 +167,8 @@ from messages_service import (
 # модуль-квалифицированно (lk_client.apis / lesson_controller.controllers).
 # Стартовая оркестрация auto_login_all_users остаётся в main.py (шаг 13) и
 # вызывает auto_login_user / auto_start_lesson через этот реэкспорт.
-import login_service
-from login_service import (
+from satanbonchbot import login_service
+from satanbonchbot.login_service import  (
     perform_login,
     auto_login_user,
     auto_start_lesson,
@@ -188,7 +188,7 @@ from login_service import (
 # выше уже выполнил их side-effects. Доступ к курсору: db.cursor / db.conn.
 
 # bot / dp / tg_session извлечены в botcore.py (задача 4.1, шаг 12a).
-from botcore import bot, dp, tg_session
+from satanbonchbot.botcore import  bot, dp, tg_session
 
 # Реестр контроллеров `controllers` извлечён в lesson_controller.py (задача 4.1,
 # шаг 11). Доступ — через lesson_controller.controllers (модуль-квалифицированно).
@@ -246,7 +246,7 @@ _background_tasks: list = []
 # фильтры (Command / F.data-префиксы / состояния FSM), поэтому относительный
 # порядок schedule/autoclick/messages/profile на маршрутизацию не влияет;
 # зафиксирован как в исходнике для надёжности.
-from handlers import common, schedule, autoclick, messages, profile
+from satanbonchbot.handlers import  common, schedule, autoclick, messages, profile
 
 
 def register_routers(dispatcher: Dispatcher) -> None:

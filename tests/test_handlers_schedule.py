@@ -8,9 +8,9 @@ import asyncio
 import base64
 from types import SimpleNamespace
 
-import lk_client
-from handlers.schedule import personal, group, teacher, room
-from handlers.schedule import common as sched_common
+from satanbonchbot import lk_client
+from satanbonchbot.handlers.schedule import  personal, group, teacher, room
+from satanbonchbot.handlers.schedule import  common as sched_common
 
 
 def _enc(text):

@@ -12,8 +12,8 @@ import asyncio
 import aiohttp
 import pytest
 
-import lk_client
-import lk_messages
+from satanbonchbot import lk_client
+from satanbonchbot import lk_messages
 
 
 class _FakeResponse:

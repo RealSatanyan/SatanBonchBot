@@ -16,18 +16,18 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile
 
-from keyboards import login_prompt_kb, get_week_navigation_buttons
-from db import is_registered, get_user_group
-import lk_client
-import timetable_service
-from formatting import (
+from satanbonchbot.keyboards import  login_prompt_kb, get_week_navigation_buttons
+from satanbonchbot.db import  is_registered, get_user_group
+from satanbonchbot import lk_client
+from satanbonchbot import timetable_service
+from satanbonchbot.formatting import  (
     format_timetable,
     filter_personal_lessons_by_date,
     _week_offset_for_date,
     _moscow_today,
 )
-from rendering import generate_timetable_image
-from login_service import auto_login_user
+from satanbonchbot.rendering import  generate_timetable_image
+from satanbonchbot.login_service import  auto_login_user
 
 router = Router()
 

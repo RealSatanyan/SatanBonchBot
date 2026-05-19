@@ -13,7 +13,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 
-from timetable_service import get_all_groups_timetable
+from satanbonchbot.timetable_service import  get_all_groups_timetable
 
 router = Router()
 

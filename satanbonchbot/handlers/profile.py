@@ -8,8 +8,8 @@ from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 
-from states import UIStates
-from keyboards import (
+from satanbonchbot.states import  UIStates
+from satanbonchbot.keyboards import  (
     cancel_kb,
     main_menu_kb,
     notify_settings_text,
@@ -17,7 +17,7 @@ from keyboards import (
     subs_settings_text,
     subs_settings_kb,
 )
-from db import (
+from satanbonchbot.db import  (
     get_notify_settings,
     set_notify_enabled,
     set_notify_minutes,
@@ -26,9 +26,9 @@ from db import (
     get_notify_messages_enabled,
     set_notify_messages_enabled,
 )
-import db
-import lk_client
-import lesson_controller
+from satanbonchbot import db
+from satanbonchbot import lk_client
+from satanbonchbot import lesson_controller
 
 router = Router()
 

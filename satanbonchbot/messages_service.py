@@ -26,11 +26,11 @@ import time as time_module
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from botcore import bot
-from config import LK_MESSAGE_POLL_MIN
-import db
-import lk_client
-import lk_messages
+from satanbonchbot.botcore import  bot
+from satanbonchbot.config import  LK_MESSAGE_POLL_MIN
+from satanbonchbot import db
+from satanbonchbot import lk_client
+from satanbonchbot import lk_messages
 
 __all__ = [
     'MESSAGES_CACHE_TTL_SEC',

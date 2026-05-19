@@ -18,12 +18,12 @@ from typing import Optional
 
 import pytz
 
-import db
-import lk_client
-from config import LESSON_INTERVALS
-from db import get_notify_settings
-from lk_client import save_debug_dump
-from security import decrypt_password
+from satanbonchbot import db
+from satanbonchbot import lk_client
+from satanbonchbot.config import  LESSON_INTERVALS
+from satanbonchbot.db import  get_notify_settings
+from satanbonchbot.lk_client import  save_debug_dump
+from satanbonchbot.security import  decrypt_password
 
 # Реестр контроллеров автоотметки. Читается/пишется хэндлерами в main.py
 # (auto_login_user, perform_login, меню автокликалки, on_shutdown) через

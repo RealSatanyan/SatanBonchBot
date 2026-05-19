@@ -2,7 +2,7 @@
 from datetime import date
 from types import SimpleNamespace
 
-import main
+from satanbonchbot import main
 
 
 # --- filter_group_lessons_by_date (дикт-формат, поле 'Число') ----------------

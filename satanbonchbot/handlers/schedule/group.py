@@ -20,17 +20,17 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile
 
-from states import UIStates
-from keyboards import cancel_kb, get_group_week_navigation_buttons
-from lk_client import get_timetable_api
-import timetable_service
-from timetable_service import get_all_groups_timetable
-from formatting import (
+from satanbonchbot.states import  UIStates
+from satanbonchbot.keyboards import  cancel_kb, get_group_week_navigation_buttons
+from satanbonchbot.lk_client import  get_timetable_api
+from satanbonchbot import timetable_service
+from satanbonchbot.timetable_service import  get_all_groups_timetable
+from satanbonchbot.formatting import  (
     format_timetable_dict,
     filter_group_lessons_by_date,
     _moscow_today,
 )
-from rendering import generate_timetable_image_from_dict
+from satanbonchbot.rendering import  generate_timetable_image_from_dict
 
 router = Router()
 

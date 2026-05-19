@@ -17,7 +17,7 @@
 
 from aiogram import Router
 
-from handlers.messages import inbox, compose
+from satanbonchbot.handlers.messages import  inbox, compose
 
 router = Router()
 router.include_router(inbox.router)

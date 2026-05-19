@@ -18,12 +18,12 @@ from typing import Optional
 import aiohttp
 import aiofiles
 
-import db
-import lk_client
-import parsers
-from config import BROWSER_HEADERS
-from security import decrypt_password
-from lk_client import DebuggableBonchAPI
+from satanbonchbot import db
+from satanbonchbot import lk_client
+from satanbonchbot import parsers
+from satanbonchbot.config import  BROWSER_HEADERS
+from satanbonchbot.security import  decrypt_password
+from satanbonchbot.lk_client import  DebuggableBonchAPI
 
 __all__ = [
     "LK_MAX_FILE_SIZE_MB",
@@ -52,7 +52,7 @@ async def get_message_api(user_id: int) -> Optional[DebuggableBonchAPI]:
     # Проверяем, есть ли уже авторизованный API для пользователя
     if user_id not in lk_client.apis:
         # Пытаемся автоматически авторизовать (auto_login_user остаётся в main).
-        import main
+        from satanbonchbot import main
         success = await main.auto_login_user(user_id)
         if not success or user_id not in lk_client.apis:
             logging.warning(f"Не удалось получить API для пользователя {user_id}")

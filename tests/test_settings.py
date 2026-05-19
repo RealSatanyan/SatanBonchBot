@@ -3,7 +3,7 @@
 Используют фикстуру temp_db — временную in-memory БД, чтобы не трогать
 настоящий users.db.
 """
-import main
+from satanbonchbot import main
 
 
 def _register(conn, user_id: int) -> None:

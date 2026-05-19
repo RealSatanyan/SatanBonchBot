@@ -1,5 +1,5 @@
 """Тесты сборщиков клавиатур, текста настроек уведомлений и справки."""
-import main
+from satanbonchbot import main
 
 
 def _reply_button_texts(kb) -> list:

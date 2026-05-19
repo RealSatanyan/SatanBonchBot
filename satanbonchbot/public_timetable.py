@@ -6,12 +6,12 @@
 живёт в lk_client.DebuggableBonchAPI — единый клиент ЛК.
 """
 import json, aiohttp, asyncio, logging
-import parsers
+from satanbonchbot import parsers
 from datetime import datetime, timedelta, time
 
 # Браузерные заголовки для запросов в sut.ru — единый источник в config.py.
 # Реэкспортируем имя ради обратной совместимости (public_timetable.BROWSER_HEADERS).
-from config import BROWSER_HEADERS
+from satanbonchbot.config import  BROWSER_HEADERS
 
 
 class BonchAPI:

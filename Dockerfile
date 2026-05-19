@@ -18,4 +18,4 @@ COPY assets/ ./assets/
 COPY . .
 
 # Указываем команду для запуска бота
-CMD ["python", "-u", "main.py"]
+CMD ["python", "-u", "-m", "satanbonchbot"]

@@ -6,7 +6,7 @@
 """
 from datetime import datetime
 
-import parsers
+from satanbonchbot import parsers
 
 
 # --- parse_id_name_pairs -----------------------------------------------------

@@ -6,10 +6,10 @@ lesson_controller.controllers изолируются фикстурой reset_re
 """
 import asyncio
 
-import lk_client
-import lesson_controller
-from login_service import parse_login_credentials, perform_login, auto_login_user
-from security import encrypt_password
+from satanbonchbot import lk_client
+from satanbonchbot import lesson_controller
+from satanbonchbot.login_service import  parse_login_credentials, perform_login, auto_login_user
+from satanbonchbot.security import  encrypt_password
 
 
 class _FakeAPI:

@@ -17,12 +17,12 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 
-from states import UIStates
-from keyboards import cancel_kb, get_classroom_week_navigation_buttons
-from lk_client import TimetableBonchAPI
-import timetable_service
-from timetable_service import get_all_groups_timetable
-from formatting import format_timetable_dict, merge_lessons_by_groups
+from satanbonchbot.states import  UIStates
+from satanbonchbot.keyboards import  cancel_kb, get_classroom_week_navigation_buttons
+from satanbonchbot.lk_client import  TimetableBonchAPI
+from satanbonchbot import timetable_service
+from satanbonchbot.timetable_service import  get_all_groups_timetable
+from satanbonchbot.formatting import  format_timetable_dict, merge_lessons_by_groups
 
 router = Router()
 

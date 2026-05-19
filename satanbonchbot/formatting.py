@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 import pytz
 
-from parsers import split_room_building
+from satanbonchbot.parsers import  split_room_building
 
 
 def filter_group_lessons_by_date(timetable, date_str: str) -> list:

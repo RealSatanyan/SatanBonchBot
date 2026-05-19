@@ -38,9 +38,9 @@ from yarl import URL as YarlURL
 
 from bonchapi import BonchAPI, parser
 
-import parsers
-from config import get_lk_semaphore, LESSON_INTERVALS, BROWSER_HEADERS, USER_AGENT
-from monitoring import _note_parser_failure
+from satanbonchbot import parsers
+from satanbonchbot.config import  get_lk_semaphore, LESSON_INTERVALS, BROWSER_HEADERS, USER_AGENT
+from satanbonchbot.monitoring import  _note_parser_failure
 
 # `apis` и `timetable_api` намеренно НЕ входят в __all__: это разделяемое
 # изменяемое состояние, доступ к нему — строго через lk_client.<имя> (модуль-
@@ -54,13 +54,7 @@ __all__ = [
 ]
 
 # Импорт для работы с расписанием без авторизации
-try:
-    from public_timetable import BonchAPI as TimetableBonchAPI
-except ImportError:
-    # Если импорт не работает, используем альтернативный путь
-    import sys
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from public_timetable import BonchAPI as TimetableBonchAPI
+from satanbonchbot.public_timetable import BonchAPI as TimetableBonchAPI
 
 
 # --- Общий http-хелпер для запросов в ЛК (задача A.1) ------------------------

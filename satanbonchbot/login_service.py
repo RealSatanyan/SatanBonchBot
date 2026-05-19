@@ -27,14 +27,14 @@
 import logging
 import re
 
-from botcore import bot
-import lk_client
-import lesson_controller
-from lesson_controller import LessonController
-import db
-from db import get_autoclick_enabled
-import parsers
-from security import decrypt_password, encrypt_password
+from satanbonchbot.botcore import  bot
+from satanbonchbot import lk_client
+from satanbonchbot import lesson_controller
+from satanbonchbot.lesson_controller import  LessonController
+from satanbonchbot import db
+from satanbonchbot.db import  get_autoclick_enabled
+from satanbonchbot import parsers
+from satanbonchbot.security import  decrypt_password, encrypt_password
 
 LOGIN_CMD_RE = re.compile(r"^/login(?:@\w+)?\s+(\S+)\s+(\S+)\s*$")
 MAX_EMAIL_LEN = 254

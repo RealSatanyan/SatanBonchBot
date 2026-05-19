@@ -18,7 +18,7 @@ from typing import Optional
 
 import pytz
 
-from config import ADMIN_IDS
+from satanbonchbot.config import  ADMIN_IDS
 
 
 class ParserFailureMonitor:
@@ -71,7 +71,7 @@ async def _alert_admins_parser_broken(distinct_users: int, window_minutes: float
         return
     # Отложенный импорт: main импортирует monitoring, поэтому module-level
     # `from main import bot` создал бы цикл. К моменту вызова main загружен.
-    import main
+    from satanbonchbot import main
     text = (
         "⚠️ <b>Похоже, сломался парсер ЛК.</b>\n\n"
         f"За последние {int(window_minutes)} мин у {distinct_users} пользователей "

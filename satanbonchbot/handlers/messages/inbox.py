@@ -18,11 +18,11 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
-from keyboards import login_prompt_kb
-from db import is_registered
-from lk_messages import get_message_api
-import messages_service
-from messages_service import (
+from satanbonchbot.keyboards import  login_prompt_kb
+from satanbonchbot.db import  is_registered
+from satanbonchbot.lk_messages import  get_message_api
+from satanbonchbot import messages_service
+from satanbonchbot.messages_service import  (
     MESSAGES_CACHE_TTL_SEC,
     show_message_list,
     _messages_cache_fresh,
