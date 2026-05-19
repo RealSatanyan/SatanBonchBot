@@ -246,7 +246,9 @@ class BonchAPI:
     def load_from_json(filepath: str = 'timetable.json') -> dict:
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
-                timetable = json.load(f)
+                # object_hook интернирует строки прямо при парсинге (задача D.1):
+                # снижает и резидентную память, и пик при загрузке ~71 МБ JSON.
+                timetable = json.load(f, object_hook=parsers.intern_strings)
             logging.info('Расписание загружено из файла: %s', filepath)
             return timetable
         except Exception as e:

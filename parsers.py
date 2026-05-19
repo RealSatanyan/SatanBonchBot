@@ -12,9 +12,26 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
 from datetime import datetime, timedelta
 
 from bs4 import BeautifulSoup
+
+
+def intern_strings(obj: dict) -> dict:
+    """
+    Интернирует строковые ключи и значения словаря (задача D.1).
+
+    В расписании всех групп (~90k занятий) дни недели, времена, предметы,
+    ФИО преподавателей, корпуса повторяются тысячекратно — без интернинга
+    в RAM лежат сотни тысяч копий одинаковых строк. Применяется как
+    object_hook при json.load и к каждому занятию в parse_timetable_table.
+    """
+    return {
+        (sys.intern(k) if type(k) is str else k):
+        (sys.intern(v) if type(v) is str else v)
+        for k, v in obj.items()
+    }
 
 # Дни недели в порядке колонок таблицы расписания cabinet.sut.ru.
 DAYS_OF_WEEK = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота']
@@ -306,7 +323,9 @@ def parse_timetable_table(html: str, group_name: str, first_day: datetime):
                     except (ValueError, TypeError):
                         continue
                     lesson_date = first_day + timedelta(days=week_number * 7 + day_of_week_int)
-                    timetable_data.append({
+                    # intern_strings — повторяющиеся строки занятия в RAM
+                    # хранятся одной копией (задача D.1).
+                    timetable_data.append(intern_strings({
                         'Группа': group_name,
                         'Число': lesson_date.strftime('%Y.%m.%d'),
                         'День недели': day_name,
@@ -320,7 +339,7 @@ def parse_timetable_table(html: str, group_name: str, first_day: datetime):
                         'ФИО преподавателя (полное)': teacher_full,
                         'Номер кабинета': room,
                         'Корпус': building,
-                    })
+                    }))
 
     return sorted(timetable_data, key=lambda x: (x['Номер недели'], x['Номер дня недели']))
 

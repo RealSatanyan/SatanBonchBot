@@ -250,6 +250,20 @@ def test_split_room_building_empty():
     assert parsers.split_room_building(None) == (None, None)
 
 
+# --- intern_strings (задача D.1) ---------------------------------------------
+
+def test_intern_strings_dedups_equal_values():
+    """Одинаковые строки из разных словарей становятся одним объектом."""
+    a = parsers.intern_strings({"Предмет": "Высшая математика"})
+    b = parsers.intern_strings({"Предмет": "Высшая " + "математика"})
+    assert a["Предмет"] is b["Предмет"]  # один объект в памяти
+
+
+def test_intern_strings_keeps_non_string_values():
+    result = parsers.intern_strings({"Номер недели": 3, "Корпус": None, "Предмет": "Физика"})
+    assert result == {"Номер недели": 3, "Корпус": None, "Предмет": "Физика"}
+
+
 # --- parse_message_rows ------------------------------------------------------
 
 def test_parse_message_rows_no_table_returns_empty():
