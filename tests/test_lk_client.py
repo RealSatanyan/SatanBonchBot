@@ -13,6 +13,7 @@ import aiohttp
 import pytest
 
 import lk_client
+import lk_messages
 
 
 class _FakeResponse:
@@ -459,7 +460,7 @@ def test_lk_search_recipients_retries_transient_error(monkeypatch):
 
     async def scenario():
         api = lk_client.DebuggableBonchAPI()
-        return await lk_client.lk_search_recipients(api, "Иванов")
+        return await lk_messages.lk_search_recipients(api, "Иванов")
 
     asyncio.run(scenario())
     assert sink[0].calls == 2
@@ -474,7 +475,7 @@ def test_lk_send_message_retries_pre_send_failure(monkeypatch):
 
     async def scenario():
         api = lk_client.DebuggableBonchAPI()
-        return await lk_client.lk_send_message(api, 42, "Тема", "Текст")
+        return await lk_messages.lk_send_message(api, 42, "Тема", "Текст")
 
     assert asyncio.run(scenario()) is True
     assert sink[0].calls == 2
@@ -490,7 +491,7 @@ def test_lk_send_message_does_not_retry_ambiguous_failure(monkeypatch):
 
     async def scenario():
         api = lk_client.DebuggableBonchAPI()
-        return await lk_client.lk_send_message(api, 42, "Тема", "Текст")
+        return await lk_messages.lk_send_message(api, 42, "Тема", "Текст")
 
     assert asyncio.run(scenario()) is False
     assert sink[0].calls == 1  # ровно одна попытка — дубль не создаётся

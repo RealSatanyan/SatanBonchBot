@@ -41,7 +41,8 @@ L0  config · botcore · states            ← конфигурация и ин�
 | | `timetable_cache.py` | TTL-хелперы кэша расписания (метаданные снимка). |
 | | `monitoring.py` | `ParserFailureMonitor` — алерты админам о поломке парсера ЛК. |
 | **L3 — Клиенты sut.ru** | `public_timetable.py` | Публичное расписание `cabinet.sut.ru` без логина: список групп, расписание, фильтры. |
-| | `lk_client.py` | Авторизованный клиент ЛК (`DebuggableBonchAPI`), реестр `apis`, синглтон `timetable_api`, `lk_*`-операции. |
+| | `lk_client.py` | Авторизованный клиент ЛК (`DebuggableBonchAPI`), http-хелпер `_lk_fetch` с ретраями, реестр `apis`, синглтон `timetable_api`. |
+| | `lk_messages.py` | Домен сообщений ЛК: `get_message_api`, поиск получателей, загрузка файла, отправка сообщения. Зависит от `lk_client`. |
 | | `lesson_controller.py` | `LessonController` — автоотметка занятий, реестр `controllers`. |
 | **L4 — Сервисы** | `timetable_service.py` | Загрузка расписания всех групп (кэш в памяти, TTL, фоновое обновление, прогресс). |
 | | `messages_service.py` | Список сообщений ЛК (постраничный кэш, состояние просмотра). |

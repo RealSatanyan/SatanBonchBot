@@ -24,7 +24,7 @@ from handlers.messages.compose import (
 )
 from handlers.messages.inbox import cmd_messages, handle_message_callback
 from states import UIStates
-from lk_client import LK_MAX_FILE_SIZE_MB
+from lk_messages import LK_MAX_FILE_SIZE_MB
 
 
 class FakeBot:

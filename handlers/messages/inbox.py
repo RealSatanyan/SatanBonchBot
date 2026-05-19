@@ -20,7 +20,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardBut
 
 from keyboards import login_prompt_kb
 from db import is_registered
-from lk_client import get_message_api
+from lk_messages import get_message_api
 import messages_service
 from messages_service import (
     MESSAGES_CACHE_TTL_SEC,

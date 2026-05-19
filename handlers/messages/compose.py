@@ -29,7 +29,7 @@ from keyboards import (
     recipients_page_kb,
 )
 from db import is_registered
-from lk_client import (
+from lk_messages import (
     get_message_api,
     lk_search_recipients,
     lk_send_message,

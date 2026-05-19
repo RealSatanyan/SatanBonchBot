@@ -101,13 +101,18 @@ from rendering import (
 
 # Клиент личного кабинета ЛК извлечён в lk_client.py (задача 4.1, шаг 10).
 # main.py остаётся фасадом — реэкспортит публичные имена (DebuggableBonchAPI,
-# save_debug_dump, get_timetable_api, get_message_api, lk_*). Приватный
-# _prune_debug_dumps не попадает под `import *` — импортируем явно.
-# Разделяемое состояние apis/timetable_api живёт в lk_client и доступно как
-# lk_client.apis / lk_client.timetable_api (модуль-квалифицированный доступ).
+# save_debug_dump, get_timetable_api). Приватный _prune_debug_dumps не
+# попадает под `import *` — импортируем явно. Разделяемое состояние
+# apis/timetable_api живёт в lk_client и доступно как lk_client.apis /
+# lk_client.timetable_api (модуль-квалифицированный доступ).
 import lk_client
 from lk_client import *
 from lk_client import _prune_debug_dumps
+
+# Домен сообщений ЛК вынесен в lk_messages.py (задача B.2 фазы 5) —
+# get_message_api, lk_search_recipients/upload/send. main.py реэкспортит их.
+import lk_messages
+from lk_messages import *
 
 # Контроллер автоотметки занятий (LessonController) извлечён в
 # lesson_controller.py (задача 4.1, шаг 11). main.py остаётся фасадом —

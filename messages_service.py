@@ -30,6 +30,7 @@ from botcore import bot
 from config import LK_MESSAGE_POLL_MIN
 import db
 import lk_client
+import lk_messages
 
 __all__ = [
     'MESSAGES_CACHE_TTL_SEC',
@@ -194,7 +195,7 @@ async def check_new_messages_for_user(user_id: int) -> int:
     if not db.get_notify_messages_enabled(user_id):
         return 0
 
-    message_api = await lk_client.get_message_api(user_id)
+    message_api = await lk_messages.get_message_api(user_id)
     if not message_api:
         return 0
 

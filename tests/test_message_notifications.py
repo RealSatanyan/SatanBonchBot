@@ -1,11 +1,11 @@
 """Тесты уведомлений о новых сообщениях ЛК (задача C.2).
 
-Сеть замокана: lk_client.get_message_api подменяется фейком, не ходящим в ЛК.
+Сеть замокана: lk_messages.get_message_api подменяется фейком, не ходящим в ЛК.
 Отправка в Telegram замокана фейковым messages_service.bot.
 """
 import asyncio
 
-import lk_client
+import lk_messages
 import messages_service
 from messages_service import check_new_messages_for_user
 
@@ -38,7 +38,7 @@ def _patch(monkeypatch, messages):
     async def fake_get_message_api(user_id):
         return _FakeApi(messages) if messages is not None else None
 
-    monkeypatch.setattr(lk_client, "get_message_api", fake_get_message_api)
+    monkeypatch.setattr(lk_messages, "get_message_api", fake_get_message_api)
     return fake_bot
 
 
