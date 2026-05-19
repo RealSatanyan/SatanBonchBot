@@ -4,7 +4,7 @@
 только декоратор @dp.* → @router.* и импорты из извлечённых модулей.
 """
 
-from aiogram import Router, F, types
+from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 

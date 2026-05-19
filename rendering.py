@@ -183,8 +183,6 @@ def generate_timetable_image_from_dict(timetable: list, title: str = "Распи
     :param group_name: Название группы для уникальности имени файла.
     :return: Путь к сохраненному изображению.
     """
-    import time
-    import hashlib
 
     # Создаем уникальное имя файла
     unique_suffix = hashlib.md5(f"{group_name}_{week_number}_{time_module.time()}".encode()).hexdigest()[:8]
@@ -311,7 +309,6 @@ def generate_timetable_image_from_dict(timetable: list, title: str = "Распи
         footer_font = ImageFont.load_default()
 
     # Шрифт для цветных эмодзи (seguiemj.ttf с поддержкой COLR - Color Outline)
-    import os
     try:
         # Загружаем seguiemj.ttf который использует COLR формат для цветных эмодзи
         # COLR шрифты поддерживают обычные размеры, не требуют фиксированного размера

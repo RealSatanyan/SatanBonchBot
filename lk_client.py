@@ -19,7 +19,6 @@ lesson_controller). ``auto_login_user``/``perform_login``/``LessonController``
 остаются в main.py.
 """
 
-import asyncio
 import logging
 import os
 import re

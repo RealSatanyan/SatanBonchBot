@@ -17,7 +17,7 @@ timetable.json (~58 МБ) формат не трогаем — метаданн�
 import json
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
