@@ -37,7 +37,7 @@ from bonchapi import BonchAPI, parser
 
 import parsers
 import db
-from config import get_lk_semaphore, LESSON_INTERVALS
+from config import get_lk_semaphore, LESSON_INTERVALS, BROWSER_HEADERS, USER_AGENT
 from monitoring import _note_parser_failure
 from security import decrypt_password
 
@@ -58,12 +58,12 @@ __all__ = [
 
 # Импорт для работы с расписанием без авторизации
 try:
-    from TImetabels import BonchAPI as TimetableBonchAPI, BROWSER_HEADERS
+    from TImetabels import BonchAPI as TimetableBonchAPI
 except ImportError:
     # Если импорт не работает, используем альтернативный путь
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from TImetabels import BonchAPI as TimetableBonchAPI, BROWSER_HEADERS
+    from TImetabels import BonchAPI as TimetableBonchAPI
 
 
 class DebuggableBonchAPI(BonchAPI):
@@ -110,7 +110,7 @@ class DebuggableBonchAPI(BonchAPI):
         CABINET = 'https://lk.sut.ru/cabinet/'
 
         headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
+            "User-Agent": USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
             "Connection": "keep-alive",
@@ -188,7 +188,7 @@ class DebuggableBonchAPI(BonchAPI):
             URL += f"?week={week_number}"
         ERR_MSG = "У Вас нет прав доступа. Или необходимо перезагрузить приложение.."
         headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
+            "User-Agent": USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
             "Referer": "https://lk.sut.ru/cabinet/",
@@ -424,7 +424,7 @@ class DebuggableBonchAPI(BonchAPI):
 
         clicked = 0
         headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
+            "User-Agent": USER_AGENT,
             "Accept": "*/*",
             "X-Requested-With": "XMLHttpRequest",
             "Referer": URL,

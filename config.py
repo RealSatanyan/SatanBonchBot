@@ -28,6 +28,21 @@ LK_LOGIN_DELAY_SEC = float(os.getenv("LK_LOGIN_DELAY_SEC", "1.5"))
 LK_LOGIN_JITTER_SEC = float(os.getenv("LK_LOGIN_JITTER_SEC", "1.0"))
 _LK_SEMAPHORE_BY_LOOP = {}
 
+# --- HTTP-заголовки для запросов в sut.ru -----------------------------------
+# sut.ru отвечает 403 на запросы без браузерного User-Agent. Единый источник
+# заголовков для всех клиентов ЛК/расписания (TImetabels, lk_client): раньше
+# User-Agent разнился между запросами (X11 Linux vs Windows), что добавляло
+# нестабильности. Теперь — один USER_AGENT на все запросы.
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0 Safari/537.36"
+)
+BROWSER_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+}
+
 # Единые интервалы пар для напоминаний/автоотметки.
 LESSON_INTERVALS = [
     (time(9, 0), time(10, 35)),    # 1 пара
