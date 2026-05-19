@@ -5,7 +5,6 @@ send_autoclick_panel, используемый этим доменом и handle
 Поведение хэндлеров не менялось — только декоратор @dp.* → @router.* и импорты.
 """
 
-import asyncio
 import logging
 
 from aiogram import Router, F, types
@@ -54,11 +53,12 @@ async def cmd_start_lesson(message: types.Message):
             return
 
     controller = lesson_controller.controllers[user_id]  # Используем контроллер пользователя
-    if controller.is_running:
+    # start() идемпотентен и race-free: проверка «уже запущена?» и создание
+    # задачи неделимы — повторный /start_lesson не плодит вторую задачу.
+    if not controller.start():
         await message.answer("Автокликалка уже запущена.")
         return
 
-    controller.task = asyncio.create_task(controller.start_lesson())
     set_autoclick_enabled(user_id, True)
     await message.answer("Автокликалка запущена.")
 
@@ -192,11 +192,10 @@ async def cb_autoclick(callback_query: types.CallbackQuery, state: FSMContext):
         return
 
     if action == "start":
-        if controller.is_running:
-            await callback_query.answer("Уже включена")
-        else:
-            controller.task = asyncio.create_task(controller.start_lesson())
+        if controller.start():
             await callback_query.answer("Включил ✅")
+        else:
+            await callback_query.answer("Уже включена")
         set_autoclick_enabled(user_id, True)
         running = True
     elif action == "stop":
