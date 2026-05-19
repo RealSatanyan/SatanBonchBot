@@ -79,8 +79,8 @@ docker compose ps                 # статус, в т.ч. healthy/unhealthy
 пароли в открытом виде (со старой версии), один раз выполните миграцию:
 
 ```bash
-python migrate_passwords.py            # локально
-docker compose exec bot python migrate_passwords.py   # в Docker
+python scripts/migrate_passwords.py            # локально
+docker compose exec bot python scripts/migrate_passwords.py   # в Docker
 ```
 
 Скрипт делает резервную копию `users.db` и идемпотентен (повторный запуск
@@ -114,9 +114,9 @@ pytest
 | Путь | Назначение |
 |------|------------|
 | `main.py` | Код Telegram-бота: хэндлеры, автоотметка, уведомления. |
-| `TImetabels.py` | Публичное расписание (cabinet.sut.ru) и CLI-режим. |
+| `TImetabels.py` | Публичное расписание и сообщения ЛК (cabinet.sut.ru / lk.sut.ru). |
 | `parsers.py` | Чистые парсеры HTML/текста (без сети), покрыты тестами. |
-| `migrate_passwords.py` | Разовая миграция: шифрование паролей в `users.db`. |
+| `scripts/` | Разовые скрипты обслуживания (`migrate_passwords.py` — уже выполнен). |
 | `tests/`, `conftest.py`, `pytest.ini` | Тесты и их конфигурация. |
 | `Dockerfile`, `docker-compose.yml`, `.dockerignore` | Сборка и запуск в Docker. |
 | `*.ttf`, `*.otf` | Шрифты для рендеринга картинки расписания. |

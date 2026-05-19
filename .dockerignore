@@ -23,7 +23,9 @@ plans/
 README.md
 
 # Тесты и их артефакты — в рантайме не нужны.
-# ВАЖНО: parsers.py и migrate_passwords.py НЕ игнорируем — они нужны боту.
+# ВАЖНО: parsers.py НЕ игнорируем — он нужен боту.
+# scripts/ остаётся в образе: разовые скрипты можно прогнать через
+# `docker compose exec bot python scripts/<name>.py`.
 tests/
 conftest.py
 pytest.ini
