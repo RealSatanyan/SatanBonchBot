@@ -19,7 +19,8 @@ lesson_controller). ``auto_login_user``/``perform_login``/``LessonController``
 остаются в main.py.
 """
 
-import asyncio
+import html
+import json
 import logging
 import os
 import re
@@ -38,7 +39,7 @@ from bonchapi import BonchAPI, parser
 
 import parsers
 import db
-from config import get_lk_semaphore, LESSON_INTERVALS
+from config import get_lk_semaphore, LESSON_INTERVALS, BROWSER_HEADERS, USER_AGENT
 from monitoring import _note_parser_failure
 from security import decrypt_password
 
@@ -59,12 +60,12 @@ __all__ = [
 
 # Импорт для работы с расписанием без авторизации
 try:
-    from TImetabels import BonchAPI as TimetableBonchAPI, BROWSER_HEADERS
+    from TImetabels import BonchAPI as TimetableBonchAPI
 except ImportError:
     # Если импорт не работает, используем альтернативный путь
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from TImetabels import BonchAPI as TimetableBonchAPI, BROWSER_HEADERS
+    from TImetabels import BonchAPI as TimetableBonchAPI
 
 
 class DebuggableBonchAPI(BonchAPI):
@@ -111,7 +112,7 @@ class DebuggableBonchAPI(BonchAPI):
         CABINET = 'https://lk.sut.ru/cabinet/'
 
         headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
+            "User-Agent": USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
             "Connection": "keep-alive",
@@ -189,7 +190,7 @@ class DebuggableBonchAPI(BonchAPI):
             URL += f"?week={week_number}"
         ERR_MSG = "У Вас нет прав доступа. Или необходимо перезагрузить приложение.."
         headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
+            "User-Agent": USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
             "Referer": "https://lk.sut.ru/cabinet/",
@@ -425,7 +426,7 @@ class DebuggableBonchAPI(BonchAPI):
 
         clicked = 0
         headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
+            "User-Agent": USER_AGENT,
             "Accept": "*/*",
             "X-Requested-With": "XMLHttpRequest",
             "Referer": URL,
@@ -461,6 +462,107 @@ class DebuggableBonchAPI(BonchAPI):
 
         self._refresh_cookies_view()
         return clicked
+
+    async def get_messages_page(self, page: int = 1) -> dict:
+        """
+        Загружает ОДНУ страницу входящих сообщений ЛК (~20 шт).
+        Возвращает {'messages': [...], 'total_pages': int}.
+
+        Постраничная загрузка нужна для ленивой подгрузки в боте: страница 1
+        отдаётся сразу, остальные — по мере листания. Вызывается на уже
+        авторизованном клиенте (get_message_api это гарантирует).
+        """
+        BASE_URL = 'https://lk.sut.ru/cabinet/project/cabinet/forms/message.php'
+        empty = {'messages': [], 'total_pages': 1}
+
+        headers = {
+            **BROWSER_HEADERS,
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Referer': 'https://lk.sut.ru/cabinet/',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        }
+        page = max(1, page)
+        page_url = f'{BASE_URL}?type=in' if page == 1 else f'{BASE_URL}?page={page}&type=in'
+
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(40), trust_env=True, headers=BROWSER_HEADERS, connector=aiohttp.TCPConnector(force_close=True)) as session:
+                # Прогрев сессии — только для первой страницы (необязательный шаг).
+                if page == 1:
+                    try:
+                        async with session.get('https://lk.sut.ru/cabinet/', cookies=self.cookies, headers=headers) as cab_response:
+                            cab_response.raise_for_status()
+                    except Exception as e:
+                        logging.debug("Инициализация кабинета пропущена: %s", e)
+
+                async with session.get(page_url, cookies=self.cookies, headers=headers) as response:
+                    response.raise_for_status()
+                    text = await response.text()
+
+            if 'ERRNO:' in text or 'Undefined index' in text:
+                logging.warning("Ошибка PHP на странице %s сообщений", page)
+                return empty
+
+            messages = parsers.parse_message_rows(text)
+            total_pages = parsers.parse_total_message_pages(text)
+            logging.debug("Страница %s сообщений: %s шт (всего страниц: %s)", page, len(messages), total_pages)
+            return {'messages': messages, 'total_pages': total_pages}
+        except Exception as e:
+            logging.error('Ошибка при получении страницы %s сообщений: %s', page, e, exc_info=True)
+            return empty
+
+    async def get_message(self, message_id: str) -> dict:
+        """Получить конкретное сообщение ЛК по ID (клиент уже авторизован)."""
+        URL = 'https://lk.sut.ru/cabinet/project/cabinet/forms/sendto2.php'
+
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(40), trust_env=True, headers=BROWSER_HEADERS, connector=aiohttp.TCPConnector(force_close=True)) as session:
+                data = {
+                    'id': message_id,
+                    'prosmotr': ''
+                }
+                async with session.post(URL, cookies=self.cookies, data=data) as response:
+                    response.raise_for_status()
+                    text = await response.text()
+
+                    # Парсим JSON ответ
+                    try:
+                        message_data = json.loads(text)
+                        # Декодируем HTML сущности в текстовых полях
+                        if 'annotation' in message_data:
+                            message_data['annotation'] = html.unescape(message_data['annotation'])
+                        if 'name' in message_data:
+                            message_data['name'] = html.unescape(message_data['name'])
+                        return message_data
+                    except json.JSONDecodeError:
+                        # Если это не JSON, пытаемся парсить HTML
+                        soup = BeautifulSoup(text, 'html.parser')
+                        message_data = {
+                            'id': message_id,
+                            'annotation': '',
+                            'name': '',
+                            'viddok': '',
+                            'otvet': 0,
+                            'idinfo': 0,
+                            'files': '',
+                            'sendto': message_id,
+                            'otpr': 0,
+                            'history': 0
+                        }
+
+                        # Пытаемся извлечь данные из HTML
+                        name_elem = soup.find('input', {'name': 'name'}) or soup.find('h2') or soup.find('h3')
+                        if name_elem:
+                            message_data['name'] = name_elem.get('value', '') or name_elem.text.strip()
+
+                        annotation_elem = soup.find('textarea', {'name': 'annotation'}) or soup.find('div', class_='annotation')
+                        if annotation_elem:
+                            message_data['annotation'] = annotation_elem.get('value', '') or annotation_elem.text.strip()
+
+                        return message_data
+        except Exception as e:
+            logging.error('Ошибка при получении сообщения ЛК %s: %s', message_id, e, exc_info=True)
+            return {}
 
 
 # Реестр API-инстансов по user_id. Изменяемый словарь — мутируется на месте,
@@ -533,10 +635,14 @@ async def get_timetable_api():
     return timetable_api
 
 
-async def get_message_api(user_id: int) -> Optional[TimetableBonchAPI]:
+async def get_message_api(user_id: int) -> Optional[DebuggableBonchAPI]:
     """
-    Получает экземпляр TimetableBonchAPI для работы с сообщениями пользователя.
-    Использует cookies из существующего авторизованного API пользователя.
+    Возвращает авторизованный клиент ЛК пользователя для работы с сообщениями.
+
+    После задачи A.1 это сам ``DebuggableBonchAPI`` пользователя (отдельный
+    TimetableBonchAPI больше не создаётся — методы сообщений живут в нём же).
+    При протухших куках выполняет переавторизацию по данным из БД.
+    Возвращает None, если авторизоваться не удалось.
     """
     # Проверяем, есть ли уже авторизованный API для пользователя
     if user_id not in apis:
@@ -547,34 +653,23 @@ async def get_message_api(user_id: int) -> Optional[TimetableBonchAPI]:
             logging.warning(f"Не удалось получить API для пользователя {user_id}")
             return None
 
-    # Используем cookies из существующего API
     existing_api = apis[user_id]
     if not hasattr(existing_api, 'cookies') or not existing_api.cookies:
-        logging.warning(f"У пользователя {user_id} нет cookies в API")
-        # Попробуем переавторизоваться
+        # Куки протухли — пробуем переавторизоваться по данным из БД.
+        logging.warning(f"У пользователя {user_id} нет cookies в API — переавторизация")
         db.cursor.execute('SELECT email, password FROM users WHERE user_id = ?', (user_id,))
         result = db.cursor.fetchone()
-        if result:
-            email, password = result
-            await existing_api.login(email, decrypt_password(password))
-            if not hasattr(existing_api, 'cookies') or not existing_api.cookies:
-                return None
-        else:
+        if not result:
+            return None
+        email, password = result
+        await existing_api.login(email, decrypt_password(password))
+        if not hasattr(existing_api, 'cookies') or not existing_api.cookies:
             return None
 
-    # Создаем временный экземпляр TimetableBonchAPI только для вызова методов
-    # Используем cookies из существующего API
-    first_day = os.getenv('FIRST_DAY', '2026-02-03')
-    message_api = TimetableBonchAPI(first_day=first_day)
-    message_api.cookies = existing_api.cookies  # Используем cookies из существующего API
-
-    # Отладочная информация
-    logging.debug(f"Создан message_api для пользователя {user_id}, cookies: {len(list(message_api.cookies)) if message_api.cookies else 0} cookies")
-
-    return message_api
+    return existing_api
 
 
-async def lk_search_recipients(message_api: TimetableBonchAPI, query: str):
+async def lk_search_recipients(message_api: DebuggableBonchAPI, query: str):
     """
     Поиск получателей в ЛК по ФИО через страницу поиска subconto.
     Возвращает список словарей вида {'id': int, 'label': 'ФИО И.О. (id=...)'}.
@@ -605,7 +700,7 @@ async def lk_search_recipients(message_api: TimetableBonchAPI, query: str):
         return []
 
 
-async def lk_upload_file(message_api: TimetableBonchAPI, filename: str, id: int = 0) -> int:
+async def lk_upload_file(message_api: DebuggableBonchAPI, filename: str, id: int = 0) -> int:
     """
     Загрузка файла в ЛК с использованием cookies уже авторизованного API.
     Реализация основана на SendMsgAPI.upload_file.
@@ -638,7 +733,7 @@ async def lk_upload_file(message_api: TimetableBonchAPI, filename: str, id: int 
 
 
 async def lk_send_message(
-    message_api: TimetableBonchAPI,
+    message_api: DebuggableBonchAPI,
     recipient_id: int,
     title: str,
     message_text: str,

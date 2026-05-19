@@ -61,7 +61,6 @@ def get_teacher_week_navigation_buttons(teacher_name: str, week_number: int = No
         week_number = 0
 
     # Кодируем имя преподавателя для безопасной передачи в callback_data
-    import base64
     encoded_name = base64.b64encode(teacher_name.encode('utf-8')).decode('utf-8')
 
     buttons = [
@@ -86,7 +85,6 @@ def get_classroom_week_navigation_buttons(classroom_number: str, week_number: in
         week_number = 0
 
     # Кодируем номер кабинета для безопасной передачи в callback_data
-    import base64
     encoded_number = base64.b64encode(classroom_number.encode('utf-8')).decode('utf-8')
 
     buttons = [
@@ -111,7 +109,6 @@ def get_group_week_navigation_buttons(group_name: str, week_number: int = None) 
         week_number = 0
 
     # Кодируем название группы для безопасной передачи в callback_data
-    import base64
     encoded_name = base64.b64encode(group_name.encode('utf-8')).decode('utf-8')
 
     buttons = [

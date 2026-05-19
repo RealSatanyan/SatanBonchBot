@@ -6,3 +6,5 @@
 -r requirements.txt
 pytest==9.0.3
 pytest-cov==7.1.0
+# Линтер. Конфигурация — ruff.toml. Запуск:  ruff check .
+ruff==0.15.13

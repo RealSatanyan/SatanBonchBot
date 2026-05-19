@@ -9,13 +9,11 @@ Router(); main.py включает их через dp.include_router(). Пове
 без фильтра), который обязан проверяться после всех остальных хэндлеров.
 """
 
-import logging
 
 from aiogram import Router, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 
-from botcore import bot
 from states import UIStates
 from keyboards import (
     BTN_SCHEDULE,
