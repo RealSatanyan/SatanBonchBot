@@ -1,7 +1,7 @@
 """Тесты мониторинга сбоев парсера ЛК: скользящее окно, порог, cooldown."""
 from datetime import datetime, timedelta
 
-import main
+from satanbonchbot import config, monitoring
 
 BASE = datetime(2026, 5, 18, 12, 0)
 
@@ -9,7 +9,7 @@ BASE = datetime(2026, 5, 18, 12, 0)
 def _monitor(**kw):
     opts = dict(window_minutes=30, threshold_users=3, cooldown_minutes=60)
     opts.update(kw)
-    return main.ParserFailureMonitor(**opts)
+    return monitoring.ParserFailureMonitor(**opts)
 
 
 # --- ParserFailureMonitor ----------------------------------------------------
@@ -66,13 +66,13 @@ def test_alert_fires_again_after_cooldown():
 # --- _parse_admin_ids --------------------------------------------------------
 
 def test_parse_admin_ids_basic():
-    assert main._parse_admin_ids("123,456") == [123, 456]
+    assert config._parse_admin_ids("123,456") == [123, 456]
 
 
 def test_parse_admin_ids_trims_and_skips_junk():
-    assert main._parse_admin_ids(" 123 , abc, 456 ") == [123, 456]
+    assert config._parse_admin_ids(" 123 , abc, 456 ") == [123, 456]
 
 
 def test_parse_admin_ids_empty_or_none():
-    assert main._parse_admin_ids("") == []
-    assert main._parse_admin_ids(None) == []
+    assert config._parse_admin_ids("") == []
+    assert config._parse_admin_ids(None) == []

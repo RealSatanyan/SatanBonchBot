@@ -1,5 +1,5 @@
 """Тесты форматирования расписания и клавиатур навигации по неделям."""
-import main
+from satanbonchbot import formatting, keyboards
 
 
 LESSON = {
@@ -23,20 +23,20 @@ def _callbacks(kb):
 # --- format_timetable_dict ---------------------------------------------------
 
 def test_format_timetable_dict_string_input_is_error():
-    assert main.format_timetable_dict("Ошибка сервера") == "❌ Ошибка сервера"
+    assert formatting.format_timetable_dict("Ошибка сервера") == "❌ Ошибка сервера"
 
 
 def test_format_timetable_dict_empty_list():
-    assert main.format_timetable_dict([]) == "📅 Расписание пусто"
+    assert formatting.format_timetable_dict([]) == "📅 Расписание пусто"
 
 
 def test_format_timetable_dict_week_filter_no_matches():
-    result = main.format_timetable_dict([LESSON], week_number=99)
+    result = formatting.format_timetable_dict([LESSON], week_number=99)
     assert "Нет занятий на неделе №99" in result
 
 
 def test_format_timetable_dict_renders_lesson():
-    result = main.format_timetable_dict([LESSON], title="Моё расписание")
+    result = formatting.format_timetable_dict([LESSON], title="Моё расписание")
     assert "Моё расписание" in result
     assert "2026.02.10" in result
     assert "Математический анализ" in result
@@ -45,7 +45,7 @@ def test_format_timetable_dict_renders_lesson():
 
 
 def test_format_timetable_dict_week_number_in_header():
-    result = main.format_timetable_dict([LESSON], week_number=1)
+    result = formatting.format_timetable_dict([LESSON], week_number=1)
     assert "Неделя №1" in result
 
 
@@ -57,14 +57,14 @@ def test_format_timetable_dict_shows_full_name_and_building():
         "Номер кабинета": "401",
         "Корпус": "Б22/1",
     }
-    result = main.format_timetable_dict([lesson])
+    result = formatting.format_timetable_dict([lesson])
     assert "Иванов Иван Иванович" in result
     assert "корпус Б22/1" in result
 
 
 def test_format_timetable_dict_falls_back_to_short_name():
     """B.1: без полного ФИО показываем краткое; без корпуса — только аудиторию."""
-    result = main.format_timetable_dict([LESSON])
+    result = formatting.format_timetable_dict([LESSON])
     assert "Иванов И.И." in result
     assert "корпус" not in result
 
@@ -72,7 +72,7 @@ def test_format_timetable_dict_falls_back_to_short_name():
 # --- get_week_navigation_buttons ---------------------------------------------
 
 def test_week_navigation_buttons_offsets():
-    callbacks = _callbacks(main.get_week_navigation_buttons(week_offset=2))
+    callbacks = _callbacks(keyboards.get_week_navigation_buttons(week_offset=2))
     assert "prev_week_1" in callbacks
     assert "next_week_3" in callbacks
     assert "current_week_0" in callbacks
@@ -82,7 +82,7 @@ def test_week_navigation_buttons_offsets():
 # --- get_teacher_week_navigation_buttons -------------------------------------
 
 def test_teacher_navigation_buttons_encode_name():
-    kb = main.get_teacher_week_navigation_buttons("Иванов И.И.", week_number=3)
+    kb = keyboards.get_teacher_week_navigation_buttons("Иванов И.И.", week_number=3)
     callbacks = _callbacks(kb)
     # Имя кодируется в base64 — в callback_data не должно быть кириллицы.
     assert any(cb.startswith("prev_teacher_week_") for cb in callbacks)
@@ -92,6 +92,6 @@ def test_teacher_navigation_buttons_encode_name():
 
 def test_teacher_navigation_buttons_default_week():
     # week_number=None трактуется как 0.
-    callbacks = _callbacks(main.get_teacher_week_navigation_buttons("Петров"))
+    callbacks = _callbacks(keyboards.get_teacher_week_navigation_buttons("Петров"))
     assert any(cb.endswith("_-1") for cb in callbacks)
     assert any(cb.endswith("_1") for cb in callbacks)

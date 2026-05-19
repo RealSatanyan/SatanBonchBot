@@ -7,8 +7,8 @@ rate-limit замоканы; парсинг учётных данных — на
 import asyncio
 from types import SimpleNamespace
 
-from handlers import common
-from handlers.common import cmd_login, cmd_start, cmd_cancel, fallback_handler
+from satanbonchbot.handlers import  common
+from satanbonchbot.handlers.common import  cmd_login, cmd_start, cmd_cancel, fallback_handler
 
 
 class FakeMessage:
@@ -162,7 +162,7 @@ def test_fallback_handler_suggests_menu():
 
 # --- C.2 №6 (доп.): меню, help, отмена, вход через кнопку --------------------
 
-from handlers.common import (  # noqa: E402
+from satanbonchbot.handlers.common import  (  # noqa: E402
     menu_schedule,
     menu_autoclick,
     menu_messages,
@@ -173,7 +173,7 @@ from handlers.common import (  # noqa: E402
     fsm_login_email,
     fsm_login_password,
 )
-from states import UIStates  # noqa: E402
+from satanbonchbot.states import  UIStates  # noqa: E402
 
 
 class FakeCallbackQuery:

@@ -6,8 +6,8 @@ reset_message_states.
 """
 import asyncio
 
-import messages_service
-from messages_service import (
+from satanbonchbot import messages_service
+from satanbonchbot.messages_service import  (
     format_message_count,
     _messages_cache_fresh,
     _build_message_state,

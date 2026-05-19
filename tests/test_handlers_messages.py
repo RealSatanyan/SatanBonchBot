@@ -7,9 +7,9 @@ lk_upload_file / lk_send_message / lk_search_recipients подменяются �
 import asyncio
 from types import SimpleNamespace
 
-import handlers.messages.compose as messages_mod
-import handlers.messages.inbox as inbox_mod
-from handlers.messages.compose import (
+from satanbonchbot.handlers.messages import compose as messages_mod
+from satanbonchbot.handlers.messages import inbox as inbox_mod
+from satanbonchbot.handlers.messages.compose import  (
     cmd_send_lk,
     handle_lk_send_callback,
     cb_msg_write,
@@ -22,9 +22,9 @@ from handlers.messages.compose import (
     fsm_write_file_invalid,
     cb_write_nofile,
 )
-from handlers.messages.inbox import cmd_messages, handle_message_callback
-from states import UIStates
-from lk_messages import LK_MAX_FILE_SIZE_MB
+from satanbonchbot.handlers.messages.inbox import  cmd_messages, handle_message_callback
+from satanbonchbot.states import  UIStates
+from satanbonchbot.lk_messages import  LK_MAX_FILE_SIZE_MB
 
 
 class FakeBot:
@@ -217,8 +217,8 @@ def test_write_file_invalid_reprompts(reset_message_states):
 
 def test_cmd_messages_warm_cache_skips_lk_request(monkeypatch, reset_message_states):
     """Свежий кэш — список показывается без перезапроса первой страницы из ЛК."""
-    import messages_service
-    from messages_service import _build_message_state
+    from satanbonchbot import messages_service
+    from satanbonchbot.messages_service import  _build_message_state
 
     shown, api_calls = [], []
 
@@ -243,8 +243,8 @@ def test_cmd_messages_warm_cache_skips_lk_request(monkeypatch, reset_message_sta
 
 def test_cmd_messages_stale_cache_refetches_first_page(monkeypatch, reset_message_states):
     """Устаревший кэш — первая страница перезапрашивается из ЛК."""
-    import messages_service
-    from messages_service import _build_message_state
+    from satanbonchbot import messages_service
+    from satanbonchbot.messages_service import  _build_message_state
 
     pages = []
 
@@ -273,7 +273,7 @@ def test_cmd_messages_stale_cache_refetches_first_page(monkeypatch, reset_messag
 # --- C.2 №2: handle_message_callback — навигация -----------------------------
 
 def test_message_navigation_prev_moves_back(monkeypatch, reset_message_states):
-    import messages_service
+    from satanbonchbot import messages_service
 
     shown = []
 
@@ -294,7 +294,7 @@ def test_message_navigation_prev_moves_back(monkeypatch, reset_message_states):
 
 def test_message_navigation_next_lazy_loads_next_page(monkeypatch, reset_message_states):
     """Дошли до конца загруженного — следующая страница подгружается лениво."""
-    import messages_service
+    from satanbonchbot import messages_service
 
     shown = []
 
@@ -372,7 +372,7 @@ def test_send_lk_without_args_shows_usage():
 # --- C.2 №2 (доп.): открытие/обновление/возврат в handle_message_callback ----
 
 def test_message_open_renders_message(monkeypatch, reset_message_states):
-    import messages_service
+    from satanbonchbot import messages_service
 
     class FakeApi:
         async def get_message(self, message_id):
@@ -393,7 +393,7 @@ def test_message_open_renders_message(monkeypatch, reset_message_states):
 
 
 def test_message_back_to_list_returns(monkeypatch, reset_message_states):
-    import messages_service
+    from satanbonchbot import messages_service
 
     shown = []
 
@@ -409,7 +409,7 @@ def test_message_back_to_list_returns(monkeypatch, reset_message_states):
 
 
 def test_message_refresh_reloads_first_page(monkeypatch, reset_message_states):
-    import messages_service
+    from satanbonchbot import messages_service
 
     class FakeApi:
         async def get_messages_page(self, page):
@@ -503,7 +503,7 @@ def test_send_lk_single_search_result_sends(monkeypatch):
 
 
 def test_send_lk_multiple_results_offers_choice(monkeypatch):
-    import messages_service
+    from satanbonchbot import messages_service
     messages_service.pending_lk_messages.clear()
 
     async def fake_get_api(uid):
@@ -523,7 +523,7 @@ def test_send_lk_multiple_results_offers_choice(monkeypatch):
 
 
 def test_lk_send_callback_sends_pending_message(monkeypatch):
-    import messages_service
+    from satanbonchbot import messages_service
     messages_service.pending_lk_messages[(1, 77)] = {"text": "тело", "title": "", "label": "Х"}
 
     async def fake_get_api(uid):

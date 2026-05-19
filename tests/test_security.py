@@ -3,8 +3,8 @@ import time as _time
 
 from cryptography.fernet import Fernet
 
-import main
-import security
+from satanbonchbot import login_service
+from satanbonchbot import security
 
 
 # --- encrypt_password / decrypt_password -------------------------------------
@@ -49,36 +49,36 @@ def test_real_encryption_key_is_valid():
 # --- parse_login_credentials -------------------------------------------------
 
 def test_parse_login_credentials_valid():
-    assert main.parse_login_credentials("/login user@sut.ru secret") == ("user@sut.ru", "secret")
+    assert login_service.parse_login_credentials("/login user@sut.ru secret") == ("user@sut.ru", "secret")
 
 
 def test_parse_login_credentials_with_bot_mention():
-    assert main.parse_login_credentials("/login@SatanBonchBot user@sut.ru secret") == (
+    assert login_service.parse_login_credentials("/login@SatanBonchBot user@sut.ru secret") == (
         "user@sut.ru",
         "secret",
     )
 
 
 def test_parse_login_credentials_rejects_missing_args():
-    assert main.parse_login_credentials("/login") is None
-    assert main.parse_login_credentials("/login onlyone") is None
+    assert login_service.parse_login_credentials("/login") is None
+    assert login_service.parse_login_credentials("/login onlyone") is None
 
 
 def test_parse_login_credentials_rejects_non_command():
-    assert main.parse_login_credentials("просто текст") is None
-    assert main.parse_login_credentials("") is None
-    assert main.parse_login_credentials(None) is None
+    assert login_service.parse_login_credentials("просто текст") is None
+    assert login_service.parse_login_credentials("") is None
+    assert login_service.parse_login_credentials(None) is None
 
 
 def test_parse_login_credentials_rejects_bad_email():
-    assert main.parse_login_credentials("/login notanemail secret") is None
+    assert login_service.parse_login_credentials("/login notanemail secret") is None
 
 
 def test_parse_login_credentials_rejects_overlong_values():
     long_email = "a" * 250 + "@sut.ru"
     long_password = "p" * 300
-    assert main.parse_login_credentials(f"/login {long_email} ok") is None
-    assert main.parse_login_credentials(f"/login user@sut.ru {long_password}") is None
+    assert login_service.parse_login_credentials(f"/login {long_email} ok") is None
+    assert login_service.parse_login_credentials(f"/login user@sut.ru {long_password}") is None
 
 
 # --- check_login_rate_limit --------------------------------------------------

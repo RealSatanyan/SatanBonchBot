@@ -2,7 +2,7 @@
 import os
 import time
 
-import healthcheck
+from satanbonchbot import healthcheck
 
 
 def test_healthcheck_fails_when_file_missing(tmp_path):

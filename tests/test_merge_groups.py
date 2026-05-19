@@ -4,7 +4,7 @@
 только полем 'Группа'. merge_lessons_by_groups сливает их в одну запись
 с полем 'Группы'.
 """
-from formatting import merge_lessons_by_groups, format_timetable_dict
+from satanbonchbot.formatting import  merge_lessons_by_groups, format_timetable_dict
 
 
 def _lesson(group, *, week=1, day=0, time="09:00-10:35", subject="Физика",

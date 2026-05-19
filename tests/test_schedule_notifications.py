@@ -5,9 +5,9 @@ notify_schedule_changes — рассылка; Telegram замокан фейко
 """
 import asyncio
 
-import db
-import timetable_service
-from timetable_service import diff_group_timetable, notify_schedule_changes
+from satanbonchbot import db
+from satanbonchbot import timetable_service
+from satanbonchbot.timetable_service import  diff_group_timetable, notify_schedule_changes
 
 
 def _lesson(week=1, day=0, num="1", time="09:00-10:35", subject="Физика",

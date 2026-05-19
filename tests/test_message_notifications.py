@@ -5,9 +5,9 @@
 """
 import asyncio
 
-import lk_messages
-import messages_service
-from messages_service import check_new_messages_for_user
+from satanbonchbot import lk_messages
+from satanbonchbot import messages_service
+from satanbonchbot.messages_service import  check_new_messages_for_user
 
 
 class _FakeBot:
@@ -52,7 +52,7 @@ def _add_user(temp_db, user_id):
 # --- первый опрос ------------------------------------------------------------
 
 def test_first_poll_records_baseline_without_notifying(monkeypatch, temp_db):
-    import db
+    from satanbonchbot import db
     _add_user(temp_db, 1)
     fake_bot = _patch(monkeypatch, [_msg("m3"), _msg("m2"), _msg("m1")])
 
@@ -66,7 +66,7 @@ def test_first_poll_records_baseline_without_notifying(monkeypatch, temp_db):
 # --- нет новых ---------------------------------------------------------------
 
 def test_no_new_messages_does_not_notify(monkeypatch, temp_db):
-    import db
+    from satanbonchbot import db
     _add_user(temp_db, 1)
     db.set_last_seen_message_id(1, "m3")
     fake_bot = _patch(monkeypatch, [_msg("m3"), _msg("m2"), _msg("m1")])
@@ -80,7 +80,7 @@ def test_no_new_messages_does_not_notify(monkeypatch, temp_db):
 # --- есть новые --------------------------------------------------------------
 
 def test_new_messages_are_notified(monkeypatch, temp_db):
-    import db
+    from satanbonchbot import db
     _add_user(temp_db, 1)
     db.set_last_seen_message_id(1, "m1")
     fake_bot = _patch(monkeypatch, [_msg("m3"), _msg("m2"), _msg("m1")])
@@ -94,7 +94,7 @@ def test_new_messages_are_notified(monkeypatch, temp_db):
 
 
 def test_last_seen_not_on_page_treats_all_as_new(monkeypatch, temp_db):
-    import db
+    from satanbonchbot import db
     _add_user(temp_db, 1)
     db.set_last_seen_message_id(1, "very-old-id")
     _patch(monkeypatch, [_msg("m3"), _msg("m2"), _msg("m1")])
@@ -125,7 +125,7 @@ def test_empty_inbox_returns_zero(monkeypatch, temp_db):
 
 def test_messages_notifications_off_skips_poll_entirely(monkeypatch, temp_db):
     """Тумблер B.1 выключен — ЛК не опрашивается, пуша нет."""
-    import db
+    from satanbonchbot import db
     _add_user(temp_db, 1)
     db.set_notify_messages_enabled(1, False)
     db.set_last_seen_message_id(1, "m1")

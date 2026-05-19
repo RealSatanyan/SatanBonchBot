@@ -10,12 +10,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from rendering import (
+from satanbonchbot.rendering import  (
     generate_timetable_image,
     generate_timetable_image_from_dict,
     _format_personal_lesson_info,
 )
-from formatting import _build_full_name_index
+from satanbonchbot.formatting import  _build_full_name_index
 
 
 def _lesson(**overrides):

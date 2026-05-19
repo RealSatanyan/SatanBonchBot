@@ -6,7 +6,7 @@ location, которое уже содержит «аудитория; корп�
 """
 from types import SimpleNamespace
 
-from formatting import format_timetable
+from satanbonchbot.formatting import  format_timetable
 
 
 def _personal(date="2026-05-18", day="Понедельник", time="13:00-14:35",
