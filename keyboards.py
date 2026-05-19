@@ -265,6 +265,14 @@ def title_kb() -> InlineKeyboardMarkup:
     ])
 
 
+def file_skip_kb() -> InlineKeyboardMarkup:
+    """Клавиатура шага «прикрепить файл»: отправить без файла или отменить."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📨 Отправить без файла", callback_data="mw:nofile")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="m:cancel")],
+    ])
+
+
 RECIPIENTS_PER_PAGE = 8
 
 

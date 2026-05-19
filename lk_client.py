@@ -54,9 +54,16 @@ __all__ = [
     "lk_search_recipients",
     "lk_upload_file",
     "lk_send_message",
+    "LK_MAX_FILE_SIZE_MB",
     "TimetableBonchAPI",
     "BROWSER_HEADERS",
 ]
+
+# Предел размера файла для вложения в сообщение ЛК. У ЛК свой лимит загрузки
+# (точное значение не подтверждено документацией — оценка ~5 МБ), у Telegram
+# bot-download — 20 МБ. Берём меньший: проверять размер ДО скачивания файла.
+# TODO: уточнить реальный лимит ЛК опытным путём и поправить значение.
+LK_MAX_FILE_SIZE_MB = 5
 
 # Импорт для работы с расписанием без авторизации
 try:
@@ -703,7 +710,8 @@ async def lk_search_recipients(message_api: DebuggableBonchAPI, query: str):
 async def lk_upload_file(message_api: DebuggableBonchAPI, filename: str, id: int = 0) -> int:
     """
     Загрузка файла в ЛК с использованием cookies уже авторизованного API.
-    Реализация основана на SendMsgAPI.upload_file.
+    Возвращает idinfo (>0) — идентификатор вложения для lk_send_message,
+    либо 0 при ошибке.
     """
     URL = 'https://lk.sut.ru/cabinet/project/cabinet/forms/message_create_stud.php'
 
@@ -741,7 +749,7 @@ async def lk_send_message(
 ) -> bool:
     """
     Отправка сообщения в ЛК с использованием cookies уже авторизованного API.
-    Реализация основана на SendMsgAPI.send_msg.
+    idinfo>0 — к сообщению прикрепляется ранее загруженный файл (lk_upload_file).
     """
     URL = 'https://lk.sut.ru/cabinet/project/cabinet/forms/message.php'
 
