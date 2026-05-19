@@ -154,7 +154,11 @@ async def send_progress_update(user_id: int, current: int, total: int, start_tim
         msg = timetable_progress_users[user_id]
         await msg.edit_text(message_text)
     except Exception as e:
-        logging.error(f"Ошибка при отправке прогресса пользователю {user_id}: {e}")
+        # «message is not modified» — прогресс не изменился между двумя
+        # обновлениями (загрузка идёт быстро/равномерно): это норма, не ошибка.
+        if 'not modified' in str(e).lower():
+            return
+        logging.warning(f"Не удалось отправить прогресс пользователю {user_id}: {e}")
 
 async def progress_updater():
     """

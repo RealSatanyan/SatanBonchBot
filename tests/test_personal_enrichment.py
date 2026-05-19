@@ -18,10 +18,13 @@ def _personal(date="2026-05-18", day="Понедельник", time="13:00-14:35
     )
 
 
-def _group(date="2026.05.18", time="13:00-14:35", subject="Физика",
-           full="Иванов Иван Иванович"):
+def _group(day="Понедельник", time="13:00-14:35", subject="Физика",
+           full="Иванов Иван Иванович", date="2026.02.10"):
+    # Сопоставление идёт по дню недели: расписание группы хранит даты от
+    # начала семестра (февраль), а не текущей недели.
     return {
         'Число': date,
+        'День недели': day,
         'Время занятия': time,
         'Предмет': subject,
         'ФИО преподавателя': 'Иванов И.И.',
@@ -47,6 +50,23 @@ def test_personal_location_without_building():
 def test_personal_enriched_with_full_name():
     text = format_timetable([_personal()], group_timetable=[_group()])
     assert "Иванов Иван Иванович" in text
+
+
+def test_personal_match_by_weekday_not_date():
+    """Сопоставление идёт по дню недели: даты личного (май) и группового
+    (февраль, от начала семестра) расписаний не совпадают — это нормально."""
+    personal = _personal(date="2026-05-18", day="Понедельник")
+    group = _group(date="2026.02.10", day="Понедельник")
+    text = format_timetable([personal], group_timetable=[group])
+    assert "Иванов Иван Иванович" in text
+
+
+def test_personal_no_match_on_different_weekday():
+    personal = _personal(day="Понедельник")
+    group = _group(day="Вторник")
+    text = format_timetable([personal], group_timetable=[group])
+    assert "Иванов И.И." in text
+    assert "Иванович" not in text
 
 
 def test_personal_falls_back_to_short_name_without_group():

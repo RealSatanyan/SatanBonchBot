@@ -45,11 +45,13 @@ def _lesson_key_digits(value) -> str:
 
 def _build_full_name_index(group_timetable) -> dict:
     """
-    Индекс полных ФИО из расписания группы: {(дата, время, предмет): ФИО}.
+    Индекс полных ФИО из расписания группы: {(день недели, время, предмет): ФИО}.
 
     Личная страница ЛК (raspisanie.php) полных ФИО не содержит — их берём из
-    расписания группы (cabinet.sut.ru). Ключ устойчив к разнице разделителей
-    в дате/времени между двумя источниками.
+    расписания группы (cabinet.sut.ru). Сопоставление по дню недели, а НЕ по
+    дате: расписание группы хранит даты от начала семестра, личное расписание —
+    текущую неделю, абсолютные даты не совпадают. Занятие в слоте «Пн 13:00 —
+    Предмет» ведёт один и тот же преподаватель в любую неделю.
     """
     index = {}
     if not isinstance(group_timetable, list):
@@ -61,7 +63,7 @@ def _build_full_name_index(group_timetable) -> dict:
         if not full_name:
             continue
         key = (
-            _lesson_key_digits(lesson.get('Число')),
+            (lesson.get('День недели') or '').strip(),
             _lesson_key_digits(lesson.get('Время занятия')),
             (lesson.get('Предмет') or '').strip(),
         )
@@ -101,7 +103,7 @@ def format_timetable(timetable, title: str = "Ваше расписание", gr
         formatted_timetable += f"----------------------\n📌 *{date} ({lessons[0].day})*\n"
         for lesson in lessons:
             key = (
-                _lesson_key_digits(lesson.date),
+                (lesson.day or '').strip(),
                 _lesson_key_digits(lesson.time),
                 (lesson.subject or '').strip(),
             )
