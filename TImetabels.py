@@ -80,16 +80,20 @@ class BonchAPI:
 
         try:
             async with session.post(URL, data=data) as response:
-                status = response.status
-                text = await response.text()
-
-                if status != 200:
+                if response.status != 200:
                     return 'Ошибка сервера'
+
+                # Под нагрузкой cabinet.sut.ru изредка отдаёт тело, которое не
+                # декодируется как UTF-8 (усечённый/ошибочный ответ). Читаем
+                # байты и декодируем устойчиво — без падения в UnicodeDecodeError;
+                # битый ответ просто не распарсится и группа уйдёт в ретрай.
+                raw = await response.read()
+                text = raw.decode('utf-8', errors='replace')
 
                 group_name = self.groups_id.get(group_id, group_id)
                 return parsers.parse_timetable_table(text, group_name, self.first_day)
         except Exception as e:
-            logging.error("Ошибка при разборе расписания группы %s: %s", group_id, e, exc_info=True)
+            logging.warning("Не удалось получить расписание группы %s: %s", group_id, e)
             return 'Ошибка сервера'
 
     @staticmethod

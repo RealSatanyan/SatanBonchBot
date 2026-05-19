@@ -1,4 +1,5 @@
 """Тесты BonchAPI из TImetabels.py: разбор времени, фильтры, JSON, неделя."""
+import asyncio
 import json
 
 import pytest
@@ -122,3 +123,52 @@ def test_constructor_parses_first_day():
     assert api.first_day.year == 2026
     assert api.first_day.month == 2
     assert api.first_day.day == 3
+
+
+# --- _get_timetable_once: устойчивость к битому ответу -----------------------
+
+class _FakeResponse:
+    def __init__(self, status=200, body=b""):
+        self.status = status
+        self._body = body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def read(self):
+        return self._body
+
+
+class _FakeSession:
+    def __init__(self, response):
+        self._response = response
+
+    def post(self, url, data=None):
+        return self._response
+
+
+def _get_once(response):
+    api = BonchAPI("2026-02-03")
+    api.groups_id = {"1": "ИКВ-11"}
+    return asyncio.run(api._get_timetable_once(_FakeSession(response), "1", "1"))
+
+
+def test_get_timetable_once_survives_non_utf8_body():
+    """Тело, не декодируемое как UTF-8, не должно ронять разбор (UnicodeDecodeError)."""
+    result = _get_once(_FakeResponse(200, b"\xff\xfe\x00\xc2\xc2 broken"))
+    # Не падаем; битый ответ просто не распарсился в таблицу.
+    assert result == "Расписание не найдено"
+
+
+def test_get_timetable_once_non_200_returns_server_error():
+    assert _get_once(_FakeResponse(503, b"")) == "Ошибка сервера"
+
+
+def test_get_timetable_once_parses_valid_html(load_fixture):
+    html = load_fixture("group_timetable.html")
+    result = _get_once(_FakeResponse(200, html.encode("utf-8")))
+    assert isinstance(result, list)
+    assert len(result) == 4
