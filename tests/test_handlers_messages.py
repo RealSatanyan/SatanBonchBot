@@ -6,8 +6,8 @@
 import asyncio
 from types import SimpleNamespace
 
-import handlers.messages as messages_mod
-from handlers.messages import (
+import handlers.messages.compose as messages_mod
+from handlers.messages.compose import (
     fsm_write_text,
     fsm_write_file_attach,
     fsm_write_file_invalid,

@@ -49,7 +49,7 @@ L0  config · botcore · states            ← конфигурация и ин�
 | **L5 — Обработчики** | `handlers/common.py` | Старт/онбординг, `/login`, `/help`, `/cancel`, fallback, пункты reply-меню. |
 | | `handlers/schedule/` | Пакет: расписание (`personal`, `group`, `teacher`, `room`, `common`). |
 | | `handlers/autoclick.py` | Автоотметка занятий (команды `LessonController` + меню). |
-| | `handlers/messages.py` | Сообщения ЛК (чтение списка + отправка). |
+| | `handlers/messages/` | Пакет: сообщения ЛК (`inbox` — чтение, `compose` — отправка). |
 | | `handlers/profile.py` | Профиль: настройки уведомлений, повторный вход, выход. |
 | **L6 — Вход** | `main.py` | Регистрация роутеров, `on_startup/shutdown`, фоновые задачи, polling. |
 

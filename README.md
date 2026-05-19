@@ -127,7 +127,7 @@ ruff check .          # линтер (конфигурация — ruff.toml)
 | `parsers.py`, `formatting.py`, `rendering.py`, `keyboards.py` | Чистая логика: парсеры, форматирование, PNG, клавиатуры. |
 | `public_timetable.py`, `lk_client.py`, `lesson_controller.py` | Клиенты `sut.ru`: публичное расписание, ЛК, автоотметка. |
 | `*_service.py` | Сервисы: загрузка расписания, сообщения ЛК, авторизация. |
-| `handlers/` | Обработчики aiogram (`schedule/` — под-пакет по поддоменам). |
+| `handlers/` | Обработчики aiogram (`schedule/`, `messages/` — под-пакеты по поддоменам). |
 | `tests/`, `conftest.py`, `pytest.ini` | Тесты и их конфигурация. |
 | `ruff.toml` | Конфигурация линтера. |
 | `scripts/` | Разовые скрипты обслуживания (`migrate_passwords.py` — уже выполнен). |
