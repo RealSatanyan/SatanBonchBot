@@ -25,6 +25,8 @@ from datetime import datetime
 
 import pytz
 
+import db
+from botcore import bot
 from lk_client import get_timetable_api
 from timetable_cache import (
     _write_timetable_meta,
@@ -178,6 +180,120 @@ async def progress_updater():
                 except Exception as e:
                     logging.error(f"Ошибка при отправке прогресса пользователю {user_id}: {e}")
 
+# --- Уведомления об изменении расписания (задача C.1) ------------------------
+
+# Если в одной группе изменений больше этого порога — вероятно, это массовая
+# перезагрузка данных на стороне ЛК (или сбой парсера), а не реальная правка.
+# О таких «изменениях» не уведомляем, чтобы не спамить.
+SCHEDULE_DIFF_NOTIFY_CAP = 30
+
+_WEEKDAY_SHORT = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+
+
+def _lesson_signature(lesson: dict) -> tuple:
+    """Идентичность занятия для диффа: всё значимое, без производных полей."""
+    return (
+        lesson.get('Номер недели'),
+        lesson.get('Номер дня недели'),
+        lesson.get('Номер занятия'),
+        lesson.get('Время занятия'),
+        lesson.get('Предмет'),
+        lesson.get('Тип занятия'),
+        lesson.get('ФИО преподавателя'),
+        lesson.get('Номер кабинета'),
+        lesson.get('Корпус'),
+    )
+
+
+def diff_group_timetable(old_lessons, new_lessons) -> dict:
+    """
+    Сравнивает два снимка расписания группы как множества занятий.
+
+    Сравнение по сигнатуре (неделя/день/пара/предмет/тип/препод/аудитория)
+    не зависит от порядка занятий — ЛК может тасовать порядок. Возвращает
+    {'added': [...], 'removed': [...]}: занятия, появившиеся и пропавшие.
+    Перенос пары виден как пара removed + added.
+    """
+    old_sigs, new_sigs = {}, {}
+    if isinstance(old_lessons, list):
+        for lesson in old_lessons:
+            if isinstance(lesson, dict):
+                old_sigs[_lesson_signature(lesson)] = lesson
+    if isinstance(new_lessons, list):
+        for lesson in new_lessons:
+            if isinstance(lesson, dict):
+                new_sigs[_lesson_signature(lesson)] = lesson
+    added = [lesson for sig, lesson in new_sigs.items() if sig not in old_sigs]
+    removed = [lesson for sig, lesson in old_sigs.items() if sig not in new_sigs]
+    return {'added': added, 'removed': removed}
+
+
+def _format_lesson_brief(lesson: dict) -> str:
+    """Краткая строка занятия для уведомления об изменении расписания."""
+    day_idx = lesson.get('Номер дня недели')
+    day = _WEEKDAY_SHORT[day_idx] if isinstance(day_idx, int) and 0 <= day_idx < 7 else '?'
+    week = lesson.get('Номер недели', '?')
+    time_str = lesson.get('Время занятия') or lesson.get('Номер занятия') or '?'
+    subject = lesson.get('Предмет', 'Не указано')
+    lesson_type = lesson.get('Тип занятия') or ''
+    suffix = f" ({lesson_type})" if lesson_type else ''
+    return f"нед.{week} {day} {time_str} — {subject}{suffix}"
+
+
+def _format_schedule_diff(group_name: str, added: list, removed: list) -> str:
+    """Текст уведомления об изменении расписания группы."""
+    text = f"🔔 Изменения в расписании группы {group_name}\n"
+    if added:
+        text += "\n➕ Добавлено:\n"
+        text += "\n".join(f"• {_format_lesson_brief(l)}" for l in added) + "\n"
+    if removed:
+        text += "\n➖ Убрано:\n"
+        text += "\n".join(f"• {_format_lesson_brief(l)}" for l in removed) + "\n"
+    return text
+
+
+async def notify_schedule_changes(old_cache: dict, new_cache: dict) -> None:
+    """
+    Сравнивает старый и новый снимки расписания всех групп и уведомляет
+    пользователей затронутых групп об изменениях (задача C.1).
+
+    Группа, отсутствующая в одном из снимков (не загрузилась в этот проход),
+    пропускается — чтобы не слать ложное «всё убрано».
+    """
+    if not old_cache or not new_cache:
+        return
+    for group_name, new_lessons in new_cache.items():
+        old_lessons = old_cache.get(group_name)
+        if old_lessons is None:
+            continue
+        diff = diff_group_timetable(old_lessons, new_lessons)
+        added, removed = diff['added'], diff['removed']
+        if not added and not removed:
+            continue
+        if len(added) + len(removed) > SCHEDULE_DIFF_NOTIFY_CAP:
+            logging.info(
+                "Группа %s: %s изменений — похоже на массовую перезагрузку ЛК, не уведомляем",
+                group_name, len(added) + len(removed),
+            )
+            continue
+        user_ids = db.get_users_by_group(group_name)
+        if not user_ids:
+            continue
+        text = _format_schedule_diff(group_name, added, removed)
+        logging.info(
+            "Уведомляю %s польз. группы %s об изменении расписания (+%s/-%s)",
+            len(user_ids), group_name, len(added), len(removed),
+        )
+        for user_id in user_ids:
+            try:
+                await bot.send_message(user_id, text)
+            except Exception as e:
+                logging.warning(
+                    "Не удалось отправить уведомление об изменении расписания %s: %s",
+                    user_id, e,
+                )
+
+
 # --- TTL-кэш расписания групп ------------------------------------------------
 # TTL-хелперы вынесены в timetable_cache.py (задача 4.1, шаг 7).
 
@@ -233,6 +349,9 @@ async def get_all_groups_timetable(force_reload: bool = False, user_id: int = No
         if timetable_progress_users:
             progress_task = asyncio.create_task(progress_updater())
 
+        # Снимок расписания ДО перезагрузки — для диффа изменений (задача C.1).
+        _old_cache = all_groups_timetable_cache
+
         try:
             api = await get_timetable_api()
             logging.info("Загрузка расписания всех групп с сервера...")
@@ -242,6 +361,13 @@ async def get_all_groups_timetable(force_reload: bool = False, user_id: int = No
             # Сохранение в JSON уже выполняется в all_groups_timetable_with_progress.
             # Метку времени пишем в sidecar — для TTL и текста «обновлено N назад».
             _write_timetable_meta(datetime.now(pytz.timezone("Europe/Moscow")))
+
+            # Сравниваем со старым снимком и уведомляем об изменениях (C.1).
+            # Фоном — рассылка не должна задерживать ответ пользователю.
+            if _old_cache:
+                asyncio.create_task(
+                    notify_schedule_changes(_old_cache, all_groups_timetable_cache)
+                )
 
             # Отправляем финальное сообщение всем пользователям
             for user_id in list(timetable_progress_users.keys()):
@@ -307,6 +433,8 @@ __all__ = [
     "send_progress_update",
     "progress_updater",
     "get_all_groups_timetable",
+    "diff_group_timetable",
+    "notify_schedule_changes",
     "_refresh_timetable_quietly",
     "preload_timetable",
 ]

@@ -92,6 +92,10 @@ logging.getLogger('aiogram').setLevel(
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 
+# Период опроса входящих ЛК для уведомлений о новых сообщениях (минуты, C.2).
+# Чем реже — тем меньше нагрузка на ЛК и риск антибота.
+LK_MESSAGE_POLL_MIN = max(1, int(os.getenv("LK_MESSAGE_POLL_MIN", "15")))
+
 # Прокси нужен ТОЛЬКО для запросов в ЛК (lk.sut.ru).
 # Напрямую, без прокси, ходят: Telegram (api.telegram.org) и публичное расписание
 # (cabinet.sut.ru, www.sut.ru) — последнее через прокси отвечает таймаутом.

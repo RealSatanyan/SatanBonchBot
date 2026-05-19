@@ -34,6 +34,7 @@ import lesson_controller
 from lesson_controller import LessonController
 import db
 from db import get_autoclick_enabled
+import parsers
 from security import decrypt_password, encrypt_password
 
 LOGIN_CMD_RE = re.compile(r"^/login(?:@\w+)?\s+(\S+)\s+(\S+)\s*$")
@@ -66,6 +67,26 @@ def parse_login_credentials(message_text: str) -> tuple[str, str] | None:
     return email, password
 
 
+async def detect_user_group(user_id: int, api) -> None:
+    """
+    Определяет учебную группу пользователя из ЛК (страница raspisanie.php)
+    и сохраняет её в БД (задача C.0).
+
+    Ошибки не пробрасывает: определение группы — побочный шаг и не должно
+    ломать вход. Группа нужна для уведомлений об изменении расписания (C.1).
+    """
+    try:
+        html = await api.get_raw_timetable()
+        group = parsers.parse_user_group(html)
+        if group:
+            db.set_user_group(user_id, group)
+            logging.info("Группа пользователя %s определена: %s", user_id, group)
+        else:
+            logging.info("Группа пользователя %s не найдена на странице расписания", user_id)
+    except Exception:
+        logging.warning("Не удалось определить группу пользователя %s", user_id, exc_info=True)
+
+
 async def auto_login_user(user_id):
     """
     Автоматически авторизует пользователя, если он есть в базе данных.
@@ -87,6 +108,10 @@ async def auto_login_user(user_id):
             raise ValueError("auto_login_failed")
 
         lesson_controller.controllers[user_id] = LessonController(lk_client.apis[user_id], bot, user_id)  # Передаем bot и user_id
+
+        # Определяем группу пользователя (C.0), если ещё не известна.
+        if not db.get_user_group(user_id):
+            await detect_user_group(user_id, lk_client.apis[user_id])
 
         logging.info("✅ Пользователь %s успешно автоматически авторизован.", user_id)
         return True
@@ -137,6 +162,8 @@ async def perform_login(user_id: int, email: str, password: str) -> bool:
             else:
                 db.cursor.execute('INSERT INTO users (user_id, email, password) VALUES (?, ?, ?)',
                                   (user_id, email, encrypted_password))
+        # Определяем группу пользователя из ЛК (C.0).
+        await detect_user_group(user_id, api)
         return True
     except Exception as e:
         logging.error("perform_login: ошибка для %s: %s", user_id, e, exc_info=True)
@@ -149,6 +176,7 @@ __all__ = [
     "MAX_EMAIL_LEN",
     "MAX_PASSWORD_LEN",
     "parse_login_credentials",
+    "detect_user_group",
     "auto_login_user",
     "auto_start_lesson",
     "perform_login",
