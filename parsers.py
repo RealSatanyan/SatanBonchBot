@@ -39,6 +39,24 @@ def parse_id_name_pairs(text: str) -> dict:
 
 # --- lk.sut.ru raspisanie.php: номер недели и week_param ---------------------
 
+def parse_user_group(html: str):
+    """
+    Извлекает название учебной группы пользователя со страницы raspisanie.php
+    личного кабинета (задача C.0).
+
+    На странице есть блок «Ваши учебные группы по расписанию…» со ссылкой на
+    список группы (spisok_stud_sql.php). Текст этой ссылки — название группы.
+    Возвращает название первой найденной группы (напр. 'ИБТС-41') либо None.
+    """
+    soup = BeautifulSoup(html or "", 'html.parser')
+    for a in soup.find_all('a', href=True):
+        if 'spisok_stud_sql' in a['href']:
+            name = a.get_text(strip=True)
+            if name:
+                return name
+    return None
+
+
 def parse_week_number(html: str) -> int:
     """
     Безопасно извлекает номер недели из HTML расписания.
