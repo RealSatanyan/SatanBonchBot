@@ -143,3 +143,70 @@ def test_click_start_lesson_raises_when_session_expired(monkeypatch):
     except ValueError:
         raised = True
     assert raised is True
+
+
+# --- сообщения ЛК (перенесены из TImetabels в A.1.2) -------------------------
+
+class _FakeMessageSession:
+    """ClientSession для методов сообщений: GET кабинета — прогрев, остальное — page_text."""
+
+    page_text = "<html></html>"
+    post_text = "{}"
+
+    def __init__(self, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def get(self, url, **kwargs):
+        if url.rstrip("/").endswith("cabinet"):
+            return _FakeResponse(200, "<html>cabinet</html>")
+        return _FakeResponse(200, type(self).page_text)
+
+    def post(self, url, **kwargs):
+        return _FakeResponse(200, type(self).post_text)
+
+
+def test_get_messages_page_returns_empty_on_php_error(monkeypatch):
+    cls = type("_PhpErrorSession", (_FakeMessageSession,), {"page_text": "ERRNO: 1 Undefined index"})
+    _patch_session(monkeypatch, cls)
+
+    async def scenario():
+        api = lk_client.DebuggableBonchAPI()
+        return await api.get_messages_page(1)
+
+    assert asyncio.run(scenario()) == {'messages': [], 'total_pages': 1}
+
+
+def test_get_messages_page_returns_empty_on_network_error(monkeypatch):
+    class _BrokenSession(_FakeMessageSession):
+        def get(self, url, **kwargs):
+            raise ConnectionError("сеть недоступна")
+
+    _patch_session(monkeypatch, _BrokenSession)
+
+    async def scenario():
+        api = lk_client.DebuggableBonchAPI()
+        return await api.get_messages_page(1)
+
+    assert asyncio.run(scenario()) == {'messages': [], 'total_pages': 1}
+
+
+def test_get_message_parses_json_and_unescapes_html(monkeypatch):
+    cls = type(
+        "_JsonMessageSession", (_FakeMessageSession,),
+        {"post_text": '{"name": "&lt;Тема&gt;", "annotation": "&amp;текст"}'},
+    )
+    _patch_session(monkeypatch, cls)
+
+    async def scenario():
+        api = lk_client.DebuggableBonchAPI()
+        return await api.get_message("123")
+
+    result = asyncio.run(scenario())
+    assert result["name"] == "<Тема>"
+    assert result["annotation"] == "&текст"

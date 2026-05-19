@@ -1,5 +1,11 @@
-import json, aiohttp, asyncio, logging, html
-from bs4 import BeautifulSoup
+"""Публичное расписание СПбГУТ с cabinet.sut.ru (без авторизации).
+
+После задачи A.1 модуль содержит ТОЛЬКО публичную работу с расписанием:
+загрузка списка групп и расписания, фильтры по преподавателю/аудитории,
+сохранение/загрузка JSON. Авторизованная работа с ЛК (login, сообщения)
+живёт в lk_client.DebuggableBonchAPI — единый клиент ЛК.
+"""
+import json, aiohttp, asyncio, logging
 import parsers
 from datetime import datetime, timedelta, time
 
@@ -15,27 +21,6 @@ class BonchAPI:
         self.limit = limit
         self.days_of_week_str_to_int = {'Понедельник': 0, 'Вторник': 1, 'Среда': 2, 'Четверг': 3, 'Пятница': 4, 'Суббота': 5}
         self.days_of_week = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота']
-
-    async def login(self, email: str, password: str) -> bool:
-        AUTH = f'https://lk.sut.ru/cabinet/lib/autentificationok.php?users={email}&parole={password}'
-        CABINET = 'https://lk.sut.ru/cabinet/'
-        
-        try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(40), trust_env=True, headers=BROWSER_HEADERS, connector=aiohttp.TCPConnector(force_close=True)) as session:
-                async with session.get(f'{CABINET}?login=no') as response:
-                    response.raise_for_status()
-                    self.cookies = response.cookies
-                    async with session.post(AUTH) as response:
-                        response.raise_for_status()
-                        text = await response.text()
-                        if text == '1':
-                            async with session.get(f'{CABINET}?login=yes') as response:
-                                response.raise_for_status()
-                                return True
-                        else:
-                            return False
-        except Exception as e:
-            return False
 
     def set_current_week(self):
         today = datetime.now()
@@ -245,119 +230,3 @@ class BonchAPI:
         except Exception as e:
             logging.error('Ошибка при загрузке расписания из файла: %s', e, exc_info=True)
             return None
-
-    async def get_messages_page(self, page: int = 1) -> dict:
-        """
-        Загружает ОДНУ страницу входящих сообщений (~20 шт).
-        Возвращает {'messages': [...], 'total_pages': int}.
-
-        Постраничная загрузка нужна для ленивой подгрузки в боте: страница 1
-        отдаётся сразу, остальные — по мере листания. Куки/сессия
-        переиспользуются между вызовами.
-        """
-        BASE_URL = 'https://lk.sut.ru/cabinet/project/cabinet/forms/message.php'
-        empty = {'messages': [], 'total_pages': 1}
-
-        if not hasattr(self, 'cookies'):
-            if not hasattr(self, 'email') or not hasattr(self, 'password'):
-                logging.warning("Нет cookies и нет email/password — не могу получить сообщения")
-                return empty
-            response = False
-            while not response:
-                response = await self.login(self.email, self.password)
-
-        headers = {
-            **BROWSER_HEADERS,
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Referer': 'https://lk.sut.ru/cabinet/',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-        }
-        page = max(1, page)
-        page_url = f'{BASE_URL}?type=in' if page == 1 else f'{BASE_URL}?page={page}&type=in'
-
-        try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(40), trust_env=True, headers=BROWSER_HEADERS, connector=aiohttp.TCPConnector(force_close=True)) as session:
-                # Прогрев сессии — только для первой страницы (необязательный шаг).
-                if page == 1:
-                    try:
-                        async with session.get('https://lk.sut.ru/cabinet/', cookies=self.cookies, headers=headers) as cab_response:
-                            cab_response.raise_for_status()
-                    except Exception as e:
-                        logging.debug("Инициализация кабинета пропущена: %s", e)
-
-                async with session.get(page_url, cookies=self.cookies, headers=headers) as response:
-                    response.raise_for_status()
-                    text = await response.text()
-
-            if 'ERRNO:' in text or 'Undefined index' in text:
-                logging.warning("Ошибка PHP на странице %s сообщений", page)
-                return empty
-
-            messages = parsers.parse_message_rows(text)
-            total_pages = parsers.parse_total_message_pages(text)
-            logging.debug("Страница %s сообщений: %s шт (всего страниц: %s)", page, len(messages), total_pages)
-            return {'messages': messages, 'total_pages': total_pages}
-        except Exception as e:
-            logging.error('Ошибка при получении страницы %s сообщений: %s', page, e, exc_info=True)
-            return empty
-
-    async def get_message(self, message_id: str) -> dict:
-        """Получить конкретное сообщение по ID"""
-        URL = 'https://lk.sut.ru/cabinet/project/cabinet/forms/sendto2.php'
-        
-        if not hasattr(self, 'cookies'):
-            if not hasattr(self, 'email') or not hasattr(self, 'password'):
-                return {}
-            response = False
-            while not response:
-                response = await self.login(self.email, self.password)
-        
-        try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(40), trust_env=True, headers=BROWSER_HEADERS, connector=aiohttp.TCPConnector(force_close=True)) as session:
-                data = {
-                    'id': message_id,
-                    'prosmotr': ''
-                }
-                async with session.post(URL, cookies=self.cookies, data=data) as response:
-                    response.raise_for_status()
-                    text = await response.text()
-                    
-                    # Парсим JSON ответ
-                    try:
-                        message_data = json.loads(text)
-                        # Декодируем HTML сущности в текстовых полях
-                        if 'annotation' in message_data:
-                            message_data['annotation'] = html.unescape(message_data['annotation'])
-                        if 'name' in message_data:
-                            message_data['name'] = html.unescape(message_data['name'])
-                        return message_data
-                    except json.JSONDecodeError:
-                        # Если это не JSON, пытаемся парсить HTML
-                        soup = BeautifulSoup(text, 'html.parser')
-                        message_data = {
-                            'id': message_id,
-                            'annotation': '',
-                            'name': '',
-                            'viddok': '',
-                            'otvet': 0,
-                            'idinfo': 0,
-                            'files': '',
-                            'sendto': message_id,
-                            'otpr': 0,
-                            'history': 0
-                        }
-                        
-                        # Пытаемся извлечь данные из HTML
-                        name_elem = soup.find('input', {'name': 'name'}) or soup.find('h2') or soup.find('h3')
-                        if name_elem:
-                            message_data['name'] = name_elem.get('value', '') or name_elem.text.strip()
-                        
-                        annotation_elem = soup.find('textarea', {'name': 'annotation'}) or soup.find('div', class_='annotation')
-                        if annotation_elem:
-                            message_data['annotation'] = annotation_elem.get('value', '') or annotation_elem.text.strip()
-                        
-                        return message_data
-        except Exception as e:
-            print(f'Ошибка при получении сообщения: {e}')
-            return {}
