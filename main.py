@@ -144,6 +144,8 @@ from messages_service import (
     MESSAGES_CACHE_TTL_SEC,
     show_message_list,
     format_message_count,
+    check_new_messages_for_user,
+    message_poll_loop,
     _messages_cache_fresh,
     _build_message_state,
     _invalidate_messages_cache,
@@ -314,6 +316,10 @@ async def on_startup(dp):
     # Запускаем предзагрузку расписания в фоновом режиме
     logging.info("📅 Запуск предзагрузки расписания всех групп в фоновом режиме...")
     _background_tasks.append(asyncio.create_task(preload_timetable()))
+
+    # Фоновый опрос входящих ЛК — уведомления о новых сообщениях (задача C.2).
+    logging.info("📨 Запуск фонового опроса сообщений ЛК...")
+    _background_tasks.append(asyncio.create_task(message_poll_loop()))
 
     logging.info("✅ Инициализация завершена, polling готов к запуску...")
 

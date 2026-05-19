@@ -32,7 +32,8 @@ with closing(sqlite3.connect('users.db')) as _ddl_db:
             notify_enabled INTEGER NOT NULL DEFAULT 1,
             notify_minutes INTEGER NOT NULL DEFAULT 10,
             autoclick_enabled INTEGER NOT NULL DEFAULT 1,
-            group_name TEXT
+            group_name TEXT,
+            last_seen_message_id TEXT
         )
     ''')
     # Миграция уже существующих БД: добавляем недостающие колонки настроек
@@ -48,6 +49,10 @@ with closing(sqlite3.connect('users.db')) as _ddl_db:
     # уведомлений об изменении расписания. Nullable: определяется из ЛК.
     if 'group_name' not in _user_columns:
         _ddl_db.execute('ALTER TABLE users ADD COLUMN group_name TEXT')
+    # last_seen_message_id — id последнего виденного входящего ЛК (задача C.2);
+    # по нему фоновый опрос отличает новые сообщения от уже показанных.
+    if 'last_seen_message_id' not in _user_columns:
+        _ddl_db.execute('ALTER TABLE users ADD COLUMN last_seen_message_id TEXT')
     _ddl_db.commit()
 
 
@@ -126,4 +131,22 @@ def set_user_group(user_id: int, group_name: str) -> None:
         cursor.execute(
             'UPDATE users SET group_name = ? WHERE user_id = ?',
             (group_name, user_id),
+        )
+
+
+# --- Последнее виденное сообщение ЛК (задача C.2) ----------------------------
+
+def get_last_seen_message_id(user_id: int):
+    """id последнего виденного входящего ЛК или None, если опроса ещё не было."""
+    cursor.execute('SELECT last_seen_message_id FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    return row[0] if row and row[0] else None
+
+
+def set_last_seen_message_id(user_id: int, message_id: str) -> None:
+    """Запоминает id последнего виденного входящего ЛК."""
+    with conn:
+        cursor.execute(
+            'UPDATE users SET last_seen_message_id = ? WHERE user_id = ?',
+            (message_id, user_id),
         )

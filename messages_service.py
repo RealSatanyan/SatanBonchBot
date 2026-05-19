@@ -20,17 +20,23 @@
 Направление зависимостей: messages_service -> botcore (вниз по слоям).
 Модуль НЕ импортирует main на уровне модуля — цикла зависимостей нет.
 """
+import asyncio
 import logging
 import time as time_module
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from botcore import bot
+from config import LK_MESSAGE_POLL_MIN
+import db
+import lk_client
 
 __all__ = [
     'MESSAGES_CACHE_TTL_SEC',
     'show_message_list',
     'format_message_count',
+    'check_new_messages_for_user',
+    'message_poll_loop',
     '_messages_cache_fresh',
     '_build_message_state',
     '_invalidate_messages_cache',
@@ -146,3 +152,91 @@ async def show_message_list(user_id: int, chat_id: int, index: int):
         await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=reply_markup)
     except Exception as e:
         logging.error(f"Ошибка при отправке списка сообщений: {e}")
+
+
+# --- Уведомления о новых сообщениях ЛК (задача C.2) --------------------------
+
+async def _notify_new_messages(user_id: int, new_messages: list) -> None:
+    """Шлёт пользователю уведомление о новых входящих ЛК (до 5 в списке)."""
+    count = len(new_messages)
+    lines = []
+    for msg in new_messages[:5]:
+        sender = msg.get('sender', 'Неизвестно')
+        if sender and '(' in sender:
+            sender = sender.split('(')[0].strip()
+        title = msg.get('title', 'Без названия')
+        if len(title) > 80:
+            title = title[:77] + '...'
+        lines.append(f"👤 {sender}\n📋 {title}")
+
+    text = f"📨 Новых сообщений в ЛК: {count}\n\n" + "\n\n".join(lines)
+    if count > 5:
+        text += f"\n\n…и ещё {count - 5}"
+    text += "\n\nОткрой «✉️ Сообщения», чтобы прочитать."
+
+    try:
+        await bot.send_message(user_id, text)
+    except Exception as e:
+        logging.warning("Не удалось отправить уведомление о сообщениях %s: %s", user_id, e)
+
+
+async def check_new_messages_for_user(user_id: int) -> int:
+    """
+    Опрашивает 1-ю страницу входящих ЛК пользователя и уведомляет о новых
+    сообщениях. Возвращает число сообщений, о которых уведомили.
+
+    Первый опрос только фиксирует точку отсчёта (last_seen_message_id) —
+    без уведомлений, чтобы не спамить уже накопившимися сообщениями.
+    """
+    message_api = await lk_client.get_message_api(user_id)
+    if not message_api:
+        return 0
+
+    first_page = await message_api.get_messages_page(1)
+    messages = first_page.get('messages', [])
+    if not messages:
+        return 0
+
+    # Входящие на странице 1 идут сверху вниз — новые первыми.
+    newest_id = messages[0]['id']
+    last_seen = db.get_last_seen_message_id(user_id)
+
+    if last_seen is None:
+        db.set_last_seen_message_id(user_id, newest_id)
+        return 0
+    if last_seen == newest_id:
+        return 0
+
+    new_messages = []
+    for msg in messages:
+        if msg['id'] == last_seen:
+            break
+        new_messages.append(msg)
+    # last_seen не найден на странице (новых больше, чем влезло) — всё новое.
+    if not new_messages:
+        new_messages = messages
+
+    db.set_last_seen_message_id(user_id, newest_id)
+    await _notify_new_messages(user_id, new_messages)
+    return len(new_messages)
+
+
+async def message_poll_loop() -> None:
+    """
+    Фоновый цикл уведомлений о новых сообщениях ЛК (задача C.2).
+
+    Каждые LK_MESSAGE_POLL_MIN минут опрашивает входящие каждого
+    авторизованного пользователя. Запросы стагерятся, чтобы не нагружать ЛК.
+    """
+    interval = LK_MESSAGE_POLL_MIN * 60
+    logging.info("📨 Фоновый опрос сообщений ЛК запущен (раз в %s мин)", LK_MESSAGE_POLL_MIN)
+    while True:
+        await asyncio.sleep(interval)
+        for user_id in list(lk_client.apis.keys()):
+            try:
+                notified = await check_new_messages_for_user(user_id)
+                if notified:
+                    logging.info("Уведомил пользователя %s о %s новых сообщениях ЛК", user_id, notified)
+            except Exception:
+                logging.warning("Ошибка опроса сообщений ЛК для %s", user_id, exc_info=True)
+            await asyncio.sleep(2)

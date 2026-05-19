@@ -29,7 +29,8 @@ USERS_SCHEMA = """
         notify_enabled INTEGER NOT NULL DEFAULT 1,
         notify_minutes INTEGER NOT NULL DEFAULT 10,
         autoclick_enabled INTEGER NOT NULL DEFAULT 1,
-        group_name TEXT
+        group_name TEXT,
+        last_seen_message_id TEXT
     )
 """
 
