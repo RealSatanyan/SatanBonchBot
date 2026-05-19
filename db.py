@@ -134,6 +134,12 @@ def set_user_group(user_id: int, group_name: str) -> None:
         )
 
 
+def get_users_by_group(group_name: str) -> list:
+    """user_id всех пользователей указанной учебной группы (задача C.1)."""
+    cursor.execute('SELECT user_id FROM users WHERE group_name = ?', (group_name,))
+    return [row[0] for row in cursor.fetchall()]
+
+
 # --- Последнее виденное сообщение ЛК (задача C.2) ----------------------------
 
 def get_last_seen_message_id(user_id: int):
