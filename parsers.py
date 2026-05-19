@@ -176,6 +176,37 @@ def _dedupe_preserving_order(items) -> tuple:
 
 # --- cabinet.sut.ru raspisanie_all_new: таблица расписания группы ------------
 
+def _clean_teacher_full(title: str | None) -> str | None:
+    """
+    Извлекает полное ФИО преподавателя из атрибута title у span.teacher.
+
+    Видимый текст span.teacher краткий («Иванов И.И.»), а title — полный
+    («Иванов Иван Иванович; »). У занятия-потока в title несколько ФИО через
+    «;». Возвращает ФИО через «; » без хвостовых разделителей, либо None.
+    """
+    if not title:
+        return None
+    names = [n.strip() for n in title.split(';') if n.strip()]
+    return '; '.join(names) if names else None
+
+
+def _split_room_building(aud_text: str | None) -> tuple:
+    """
+    Делит текст span.aud на номер аудитории и корпус.
+
+    На cabinet.sut.ru span.aud имеет вид «131; Б22/1» (аудитория; корпус).
+    '131; Б22/1' -> ('131', 'Б22/1'); 'ДОТ' -> ('ДОТ', None); '' -> ('', None).
+    """
+    if not aud_text:
+        return aud_text, None
+    parts = [p.strip() for p in aud_text.split(';') if p.strip()]
+    if not parts:
+        return aud_text, None
+    if len(parts) == 1:
+        return parts[0], None
+    return parts[0], '; '.join(parts[1:])
+
+
 def parse_timetable_table(html: str, group_name: str, first_day: datetime):
     """
     Разбирает HTML расписания группы (таблица class="simple-little-table").
@@ -229,9 +260,16 @@ def parse_timetable_table(html: str, group_name: str, first_day: datetime):
 
                 teacher_element = pair_div.find('span', class_='teacher')
                 teacher = teacher_element.text.strip() if teacher_element else None
+                # Полное ФИО — в title-атрибуте span.teacher (видимый текст краткий).
+                teacher_full = (
+                    _clean_teacher_full(teacher_element.get('title'))
+                    if teacher_element else None
+                )
 
                 room_element = pair_div.find('span', class_='aud')
-                room = room_element.get_text(' ', strip=True) if room_element else None
+                room_raw = room_element.get_text(' ', strip=True) if room_element else None
+                # span.aud содержит «<аудитория>; <корпус>» — разделяем на два поля.
+                room, building = _split_room_building(room_raw)
 
                 weeks_element = pair_div.find('span', class_='weeks')
                 week_number_str = (
@@ -260,7 +298,9 @@ def parse_timetable_table(html: str, group_name: str, first_day: datetime):
                         'Предмет': subject,
                         'Тип занятия': lesson_type,
                         'ФИО преподавателя': teacher,
+                        'ФИО преподавателя (полное)': teacher_full,
                         'Номер кабинета': room,
+                        'Корпус': building,
                     })
 
     return sorted(timetable_data, key=lambda x: (x['Номер недели'], x['Номер дня недели']))

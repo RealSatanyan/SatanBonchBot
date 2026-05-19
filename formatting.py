@@ -96,6 +96,7 @@ def merge_lessons_by_groups(lessons: list) -> list:
             lesson.get('Тип занятия'),
             lesson.get('ФИО преподавателя'),
             lesson.get('Номер кабинета'),
+            lesson.get('Корпус'),
         )
         if key not in merged:
             entry = dict(lesson)
@@ -163,8 +164,10 @@ def format_timetable_dict(timetable: list, title: str = "Расписание", 
         for lesson in lessons_sorted:
             time_str = lesson.get('Время занятия', 'Не указано')
             subject = lesson.get('Предмет', 'Не указано')
-            teacher = lesson.get('ФИО преподавателя', 'Не указано')
+            # Полное ФИО, если доступно (задача B.1), иначе — краткое.
+            teacher = lesson.get('ФИО преподавателя (полное)') or lesson.get('ФИО преподавателя', 'Не указано')
             room = lesson.get('Номер кабинета', 'Не указано')
+            building = lesson.get('Корпус')
             lesson_type = lesson.get('Тип занятия', '')
             group = lesson.get('Группа', '')
             groups = lesson.get('Группы')
@@ -178,7 +181,10 @@ def format_timetable_dict(timetable: list, title: str = "Расписание", 
             if teacher and teacher != 'Не указано':
                 formatted_timetable += f"🎓 {teacher}\n"
             if room and room != 'Не указано':
-                formatted_timetable += f"🏫 {room}\n"
+                room_line = f"🏫 {room}"
+                if building:
+                    room_line += f" · корпус {building}"
+                formatted_timetable += room_line + "\n"
             if lesson_type:
                 formatted_timetable += f"🔹 Тип: {lesson_type}\n"
             formatted_timetable += "\n"

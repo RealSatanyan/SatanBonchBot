@@ -1,7 +1,11 @@
 <!-- Синтетическая фикстура: ответ cabinet.sut.ru/raspisanie_all_new (расписание
-     группы). Таблица class="simple-little-table"; колонки cells[1:] — дни недели
-     (Понедельник..Суббота). Пара лежит в div.pair со span'ами subect/type/
-     teacher/aud/weeks. -->
+     группы), обезличенный пример с реальной структурой разметки.
+     Таблица class="simple-little-table"; колонки cells[1:] — дни недели
+     (Понедельник..Суббота). Пара лежит в div.pair: span.subect/type/weeks/
+     teacher/aud (type+weeks внутри <small>, teacher внутри <i>).
+     span.teacher несёт полное ФИО в атрибуте title; span.aud — «аудитория;
+     корпус». Информатика намеренно без title и без корпуса — для проверки
+     фолбэка на краткое ФИО и отсутствия корпуса. -->
 <html>
 <body>
 <table class="simple-little-table">
@@ -9,22 +13,38 @@
     <tr>
       <td>1 (09:00-10:35)</td>
       <td>
-        <div class="pair">
+        <div class="pair" pair="1" weekday="1">
           <span class="subect"><strong>Математический анализ</strong></span>
-          <span class="type">(лекция)</span>
-          <span class="teacher">Иванов И.И.</span>
-          <span class="aud">ауд. 401</span>
-          <span class="weeks">(1,2н)</span>
+          <br/>
+          <small>
+            <span class="type">(лекция)</span>
+            <br/>
+            <span class="weeks">(1, 2н)</span>
+          </small>
+          <br/>
+          <i>
+            <span class="teacher" title="Иванов Иван Иванович; ">Иванов И.И.</span>
+          </i>
+          <br/>
+          <span class="aud">401; Б22/1</span>
         </div>
       </td>
       <td></td>
       <td>
-        <div class="pair">
+        <div class="pair" pair="1" weekday="3">
           <span class="subect"><strong>Физика</strong></span>
-          <span class="type">(практика)</span>
-          <span class="teacher">Петров П.П.</span>
-          <span class="aud">ауд. 512</span>
-          <span class="weeks">(2н)</span>
+          <br/>
+          <small>
+            <span class="type">(практика)</span>
+            <br/>
+            <span class="weeks">(2н)</span>
+          </small>
+          <br/>
+          <i>
+            <span class="teacher" title="Петров Пётр Петрович; ">Петров П.П.</span>
+          </i>
+          <br/>
+          <span class="aud">512; Б22/2</span>
         </div>
       </td>
       <td></td>
@@ -34,12 +54,20 @@
     <tr>
       <td>7</td>
       <td>
-        <div class="pair">
+        <div class="pair" pair="7" weekday="1">
           <span class="subect"><strong>Информатика</strong></span>
-          <span class="type">(лаб)</span>
-          <span class="teacher">Сидоров С.С.</span>
-          <span class="aud">ауд. 100</span>
-          <span class="weeks">(1н)</span>
+          <br/>
+          <small>
+            <span class="type">(лаб)</span>
+            <br/>
+            <span class="weeks">(1н)</span>
+          </small>
+          <br/>
+          <i>
+            <span class="teacher">Сидоров С.С.</span>
+          </i>
+          <br/>
+          <span class="aud">100</span>
         </div>
       </td>
       <td></td>

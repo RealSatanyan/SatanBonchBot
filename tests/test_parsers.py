@@ -154,9 +154,36 @@ def test_parse_timetable_table_lesson_fields(load_fixture):
     assert matan["Время занятия"] == "09:00-10:35"
     assert matan["Тип занятия"] == "лекция"
     assert matan["ФИО преподавателя"] == "Иванов И.И."
-    assert matan["Номер кабинета"] == "ауд. 401"
+    assert matan["Номер кабинета"] == "401"
     # first_day + 1 неделя * 7 + день 0 = 2026-02-10
     assert matan["Число"] == "2026.02.10"
+
+
+def test_parse_timetable_table_extracts_full_name_and_building(load_fixture):
+    """Полное ФИО из title span.teacher и корпус из span.aud (задача B.1)."""
+    html = load_fixture("group_timetable.html")
+    lessons = parsers.parse_timetable_table(html, "ИКВ-11", FIRST_DAY)
+    matan = next(x for x in lessons if x["Предмет"] == "Математический анализ" and x["Номер недели"] == 1)
+    assert matan["ФИО преподавателя (полное)"] == "Иванов Иван Иванович"
+    assert matan["Корпус"] == "Б22/1"
+
+
+def test_parse_timetable_table_full_name_falls_back_when_no_title(load_fixture):
+    """Без title у span.teacher полное ФИО — None, краткое остаётся."""
+    html = load_fixture("group_timetable.html")
+    lessons = parsers.parse_timetable_table(html, "ИКВ-11", FIRST_DAY)
+    informatika = next(x for x in lessons if x["Предмет"] == "Информатика")
+    assert informatika["ФИО преподавателя (полное)"] is None
+    assert informatika["ФИО преподавателя"] == "Сидоров С.С."
+
+
+def test_parse_timetable_table_building_none_when_aud_has_no_building(load_fixture):
+    """span.aud без «;» — корпус None, номер кабинета — весь текст."""
+    html = load_fixture("group_timetable.html")
+    lessons = parsers.parse_timetable_table(html, "ИКВ-11", FIRST_DAY)
+    informatika = next(x for x in lessons if x["Предмет"] == "Информатика")
+    assert informatika["Номер кабинета"] == "100"
+    assert informatika["Корпус"] is None
 
 
 def test_parse_timetable_table_seventh_lesson_gets_fixed_time(load_fixture):
@@ -191,6 +218,36 @@ def test_parse_timetable_table_skips_non_numeric_weeks():
     </tbody></table>
     """
     assert parsers.parse_timetable_table(html, "ИКВ-11", FIRST_DAY) == []
+
+
+# --- _clean_teacher_full / _split_room_building (задача B.1) -----------------
+
+def test_clean_teacher_full_strips_trailing_separator():
+    assert parsers._clean_teacher_full("Иванов Иван Иванович; ") == "Иванов Иван Иванович"
+
+
+def test_clean_teacher_full_joins_multiple_names():
+    title = "Враге Евгения Викторовна; Астафьев Василий Вячеславович; "
+    assert parsers._clean_teacher_full(title) == "Враге Евгения Викторовна; Астафьев Василий Вячеславович"
+
+
+def test_clean_teacher_full_empty_returns_none():
+    assert parsers._clean_teacher_full(None) is None
+    assert parsers._clean_teacher_full("") is None
+    assert parsers._clean_teacher_full("  ;  ") is None
+
+
+def test_split_room_building_splits_room_and_building():
+    assert parsers._split_room_building("131; Б22/1") == ("131", "Б22/1")
+
+
+def test_split_room_building_no_building():
+    assert parsers._split_room_building("ДОТ") == ("ДОТ", None)
+
+
+def test_split_room_building_empty():
+    assert parsers._split_room_building("") == ("", None)
+    assert parsers._split_room_building(None) == (None, None)
 
 
 # --- parse_message_rows ------------------------------------------------------

@@ -49,6 +49,26 @@ def test_format_timetable_dict_week_number_in_header():
     assert "Неделя №1" in result
 
 
+def test_format_timetable_dict_shows_full_name_and_building():
+    """B.1: при наличии полного ФИО и корпуса показываем их."""
+    lesson = {
+        **LESSON,
+        "ФИО преподавателя (полное)": "Иванов Иван Иванович",
+        "Номер кабинета": "401",
+        "Корпус": "Б22/1",
+    }
+    result = main.format_timetable_dict([lesson])
+    assert "Иванов Иван Иванович" in result
+    assert "корпус Б22/1" in result
+
+
+def test_format_timetable_dict_falls_back_to_short_name():
+    """B.1: без полного ФИО показываем краткое; без корпуса — только аудиторию."""
+    result = main.format_timetable_dict([LESSON])
+    assert "Иванов И.И." in result
+    assert "корпус" not in result
+
+
 # --- get_week_navigation_buttons ---------------------------------------------
 
 def test_week_navigation_buttons_offsets():
