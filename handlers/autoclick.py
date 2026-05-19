@@ -151,8 +151,8 @@ async def cmd_my_account(message: types.Message):
 
         if success and has_api_after and has_controller_after:
             status_parts.append("✅ Авторизация восстановлена!")
-            status_parts.append(f"🔑 API авторизован: ✅ Да")
-            status_parts.append(f"🎮 Контроллер создан: ✅ Да")
+            status_parts.append("🔑 API авторизован: ✅ Да")
+            status_parts.append("🎮 Контроллер создан: ✅ Да")
         else:
             status_parts.append("❌ Не удалось восстановить авторизацию.")
             status_parts.append("💡 Выполните /login <email> <password> для повторной авторизации.")

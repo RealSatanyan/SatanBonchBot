@@ -229,15 +229,6 @@ def generate_timetable_image_from_dict(timetable: list, title: str = "Распи
     # Сортируем дни по дате
     sorted_days = sorted(days.items(), key=lambda x: datetime.strptime(x[0], "%Y.%m.%d") if x[0] else datetime.min)
 
-    # Пастельные розово-фиолетовые цвета для разных типов занятий
-    lesson_type_colors = {
-        'Лекция': (186, 104, 200),           # Пастельный фиолетовый
-        'Практические занятия': (255, 182, 193),  # Пастельный розовый
-        'Лабораторная работа': (221, 160, 221),  # Сливовый
-        'Семинар': (230, 190, 255),          # Лавандовый
-    }
-    default_color = (200, 180, 220)  # Пастельный фиолетово-серый по умолчанию
-
     # Подсчитываем максимальную высоту для столбцов с блоками
     header_height = 120
     block_padding = 15
@@ -315,7 +306,6 @@ def generate_timetable_image_from_dict(timetable: list, title: str = "Распи
         # Pillow 10.0.0+ поддерживает COLR через embedded_color=True
         emoji_font = ImageFont.truetype(emoji_font_path, size=18)
         emoji_font_small = ImageFont.truetype(emoji_font_path, size=14)
-        emoji_font_tiny = ImageFont.truetype(emoji_font_path, size=12)
         logging.info(f"seguiemj.ttf (COLR) загружен для цветных эмодзи из {os.path.abspath(emoji_font_path)}")
     except IOError as e:
         logging.error(f"Ошибка при загрузке {emoji_font_path}: {e}")
@@ -324,12 +314,10 @@ def generate_timetable_image_from_dict(timetable: list, title: str = "Распи
             emoji_font_path_fallback = "OpenSansEmoji.ttf"
             emoji_font = ImageFont.truetype(emoji_font_path_fallback, size=18)
             emoji_font_small = ImageFont.truetype(emoji_font_path_fallback, size=14)
-            emoji_font_tiny = ImageFont.truetype(emoji_font_path_fallback, size=12)
             logging.warning("seguiemj.ttf не найден, используем OpenSansEmoji.ttf")
         except IOError:
             emoji_font = ImageFont.load_default()
             emoji_font_small = ImageFont.load_default()
-            emoji_font_tiny = ImageFont.load_default()
             logging.warning("Эмодзи шрифты не найдены, используем default")
 
     # Рисуем заголовок с названием группы

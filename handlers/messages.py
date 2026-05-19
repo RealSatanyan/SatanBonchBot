@@ -440,13 +440,13 @@ async def handle_message_callback(callback_query: CallbackQuery):
             if msg_info:
                 text += f"📅 *Дата:* {msg_info.get('date', 'Не указана')}\n"
                 text += f"👤 *Отправитель:* {msg_info.get('sender', 'Неизвестно')}\n"
-                text += f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                text += "━━━━━━━━━━━━━━━━━━━━\n\n"
 
             text += f"{annotation}\n\n"
-            text += f"━━━━━━━━━━━━━━━━━━━━\n"
+            text += "━━━━━━━━━━━━━━━━━━━━\n"
 
             if msg_info and msg_info.get("files"):
-                text += f"\n📎 *Файлы:*\n"
+                text += "\n📎 *Файлы:*\n"
                 for file_info in msg_info["files"]:
                     file_name = file_info.get("name", "Файл")
                     file_url = file_info.get("url", "")

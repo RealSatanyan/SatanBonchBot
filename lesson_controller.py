@@ -137,7 +137,7 @@ class LessonController:
                                 subject = details.get("subject") or ""
                                 teacher = details.get("teacher") or ""
                                 subj_part = f"\n📚 {subject}" if subject else ""
-                                room_part = f"\n🚪 Аудитория: {room}" if room and room != "—" else f"\n🚪 Аудитория: —"
+                                room_part = f"\n🚪 Аудитория: {room}" if room and room != "—" else "\n🚪 Аудитория: —"
                                 teacher_part = f"\n👨‍🏫 {teacher}" if teacher else ""
                                 msg = (
                                     f"🔔 Через {minutes_left} мин начнётся {human_idx}-я пара."
