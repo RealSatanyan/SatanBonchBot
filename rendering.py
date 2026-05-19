@@ -200,6 +200,225 @@ def draw_rounded_rectangle(draw, xy, radius, fill=None, outline=None, width=1):
             draw.arc([x1, y2 - radius * 2, x1 + radius * 2, y2], 90, 180, fill=outline)
             draw.arc([x2 - radius * 2, y2 - radius * 2, x2, y2], 0, 90, fill=outline)
 
+def _load_timetable_fonts():
+    """
+    Загружает шрифты для картинки расписания. Возвращает кортеж:
+    (title_font, day_font, lesson_title_font, lesson_text_font, footer_font,
+     emoji_font, emoji_font_small). Фолбэк на default при отсутствии файлов.
+    """
+    text_font_path = _font_path("Montserrat-SemiBold.ttf")
+    emoji_font_path = _font_path("seguiemj.ttf")
+
+    # Шрифты для текста (Montserrat-SemiBold)
+    try:
+        title_font = ImageFont.truetype(text_font_path, size=36)
+        day_font = ImageFont.truetype(text_font_path, size=24)
+        lesson_title_font = ImageFont.truetype(text_font_path, size=18)
+        lesson_text_font = ImageFont.truetype(text_font_path, size=14)
+        footer_font = ImageFont.truetype(text_font_path, size=14)
+    except IOError:
+        # Fallback на default, если шрифт не найден
+        title_font = ImageFont.load_default()
+        day_font = ImageFont.load_default()
+        lesson_title_font = ImageFont.load_default()
+        lesson_text_font = ImageFont.load_default()
+        footer_font = ImageFont.load_default()
+
+    # Шрифт для цветных эмодзи (seguiemj.ttf с поддержкой COLR - Color Outline)
+    try:
+        # Загружаем seguiemj.ttf который использует COLR формат для цветных эмодзи
+        # COLR шрифты поддерживают обычные размеры, не требуют фиксированного размера
+        # Pillow 10.0.0+ поддерживает COLR через embedded_color=True
+        emoji_font = ImageFont.truetype(emoji_font_path, size=18)
+        emoji_font_small = ImageFont.truetype(emoji_font_path, size=14)
+        logging.info(f"seguiemj.ttf (COLR) загружен для цветных эмодзи из {os.path.abspath(emoji_font_path)}")
+    except IOError as e:
+        logging.error(f"Ошибка при загрузке {emoji_font_path}: {e}")
+        # Fallback на OpenSansEmoji если seguiemj не найден
+        try:
+            emoji_font_path_fallback = _font_path("OpenSansEmoji.ttf")
+            emoji_font = ImageFont.truetype(emoji_font_path_fallback, size=18)
+            emoji_font_small = ImageFont.truetype(emoji_font_path_fallback, size=14)
+            logging.warning("seguiemj.ttf не найден, используем OpenSansEmoji.ttf")
+        except IOError:
+            emoji_font = ImageFont.load_default()
+            emoji_font_small = ImageFont.load_default()
+            logging.warning("Эмодзи шрифты не найдены, используем default")
+
+    return (title_font, day_font, lesson_title_font, lesson_text_font,
+            footer_font, emoji_font, emoji_font_small)
+
+
+# Эмодзи дней недели. Левый и правый столбцы исторически различаются для
+# Четверга (🧡 vs 💗 ) — сохранено как есть, чтобы картинка не «дрейфовала».
+_LEFT_DAY_EMOJIS = {
+    "Понедельник": "💙", "Вторник": "💚", "Среда": "💛",
+    "Четверг": "🧡", "Пятница": "❤️", "Суббота": "💜",
+}
+_RIGHT_DAY_EMOJIS = {
+    "Понедельник": "💙", "Вторник": "💚", "Среда": "💛",
+    "Четверг": "💗 ", "Пятница": "❤️", "Суббота": "💜",
+}
+
+
+def _draw_day_block(draw, day_name, date, lessons, x, y, column_width,
+                    day_font, emoji_font, lesson_text_font, lesson_title_font,
+                    day_emojis, block_padding, block_spacing):
+    """Рисует блок одного дня (рамка, заголовок, занятия). Возвращает y следующего блока."""
+    lessons_sorted = sorted(lessons, key=lambda les: les.get('Время занятия', '') or '')
+
+    # Вычисляем высоту блока на основе количества занятий
+    day_header_height = 40
+    block_content_height = len(lessons_sorted) * 80 + block_padding * 2 + day_header_height
+    block_height = max(150, block_content_height)
+
+    # Рисуем белый блок с розовой рамкой для дня
+    draw_rounded_rectangle(
+        draw, [x, y, x + column_width - 20, y + block_height],
+        radius=12, fill=(255, 255, 255), outline=(255, 182, 193), width=2
+    )
+
+    # Рисуем заголовок дня в верхней части блока
+    header_bg_y = y + 5
+    header_bg_height = day_header_height - 10
+    draw_rounded_rectangle(
+        draw, [x + 5, header_bg_y, x + column_width - 25, header_bg_y + header_bg_height],
+        radius=6, fill=(255, 240, 245), outline=(255, 182, 193), width=1
+    )
+
+    # Текст дня недели — эмодзи и текст рисуем раздельно для выравнивания
+    day_emoji = day_emojis.get(day_name, "📅")
+    day_name_text = f"{day_name}"
+    if date:
+        day_name_text += f" ({date})"
+
+    draw_text_with_emoji(draw, day_emoji, x + 12, header_bg_y + 8, day_font, emoji_font, fill=(100, 50, 100))
+
+    # Вычисляем позицию текста после эмодзи
+    try:
+        emoji_width = draw.textlength(day_emoji, font=emoji_font)
+    except:
+        emoji_width = 25
+
+    draw_text_with_emoji(draw, day_name_text, x + 12 + int(emoji_width) + 6, header_bg_y + 2, day_font, emoji_font, fill=(100, 50, 100))
+
+    # Отрисовываем занятия в блоке
+    lesson_y = y + block_padding + day_header_height
+    for lesson in lessons_sorted:
+        lesson_y = _draw_lesson_entry(draw, lesson, x + block_padding, lesson_y, column_width - block_padding * 2 - 20, emoji_font, lesson_text_font, lesson_title_font)
+
+    return y + block_height + block_spacing
+
+
+def _draw_lesson_entry(draw, lesson, x, y, max_width, emoji_font,
+                       lesson_text_font, lesson_title_font):
+    """Рисует одну запись занятия (время, предмет, инфо). Возвращает нижний y."""
+    time_str = lesson.get('Время занятия', 'Не указано')
+    subject = lesson.get('Предмет', 'Не указано')
+    # Полное ФИО, если доступно (задача B.1), иначе — краткое.
+    teacher = lesson.get('ФИО преподавателя (полное)') or lesson.get('ФИО преподавателя', 'Не указано')
+    room = lesson.get('Номер кабинета', 'Не указано')
+    building = lesson.get('Корпус')
+
+    # Форматируем время: заменяем ":" на "."
+    time_formatted = time_str.replace(':', '.')
+
+    current_y = y
+
+    # Более контрастный прямоугольник для времени с белым текстом
+    time_box_height = 28
+    time_box_width = 100
+    time_box_x = x
+    time_box_y = current_y
+
+    # Более темный и контрастный розовый цвет для времени
+    time_color = (219, 112, 147)  # Более насыщенный розовый для лучшего контраста
+    draw_rounded_rectangle(
+        draw, [time_box_x, time_box_y, time_box_x + time_box_width, time_box_y + time_box_height],
+        radius=5, fill=time_color
+    )
+
+    # Белый текст времени
+    try:
+        time_bbox = draw.textbbox((0, 0), time_formatted, font=lesson_text_font)
+        time_text_width = time_bbox[2] - time_bbox[0]
+        time_text_height = time_bbox[3] - time_bbox[1]
+    except:
+        time_text_width = draw.textlength(time_formatted, font=lesson_text_font)
+        time_text_height = 14
+
+    time_text_x = time_box_x + (time_box_width - time_text_width) // 2
+    time_text_y = time_box_y + (time_box_height - time_text_height) // 2
+    draw_text_with_emoji(draw, time_formatted, time_text_x, time_text_y, lesson_text_font, emoji_font, fill=(255, 255, 255))
+
+    # Предмет с эмодзи книги
+    subject_x = x
+    subject_y = current_y + time_box_height + 8
+
+    # Эмодзи книги вместо квадрата
+    book_emoji = "📚"
+    draw_text_with_emoji(draw, book_emoji, subject_x, subject_y, lesson_title_font, emoji_font, fill=(0, 0, 0))
+
+    # Текст предмета
+    subject_display = subject[:43] + "..." if len(subject) > 43 else subject
+    try:
+        emoji_width = draw.textlength(book_emoji, font=emoji_font)
+    except:
+        emoji_width = 20
+    draw_text_with_emoji(draw, subject_display, subject_x + int(emoji_width) + 6, subject_y, lesson_title_font, emoji_font, fill=(0, 0, 0))
+
+    # Преподаватель, кабинет и тип предмета с эмодзи
+    info_y = subject_y + 22
+    info_parts = []
+    # Слитые группы-потоки (расписание преподавателя/аудитории) — см. B.3.
+    groups = lesson.get('Группы')
+    if groups:
+        info_parts.append(f"👥 {', '.join(groups)}")
+    if teacher and teacher != 'Не указано':
+        teacher_display = teacher[:24] + "..." if len(teacher) > 24 else teacher
+        info_parts.append(f"👤 {teacher_display}")  # Используем простой эмодзи вместо составного
+    if room and room != 'Не указано':
+        room_label = f"{room} · {building}" if building else room
+        info_parts.append(f"🏫 {room_label}")
+
+    # Добавляем тип предмета
+    lesson_type = lesson.get('Тип занятия', '')
+    if lesson_type:
+        # Выбираем эмодзи в зависимости от типа занятия
+        type_emoji = "📖"  # По умолчанию
+        if "Лекция" in lesson_type:
+            type_emoji = "📝"
+        elif "Практические" in lesson_type or "Практика" in lesson_type:
+            type_emoji = "✏️"
+        elif "Лабораторная" in lesson_type or "Лаборатория" in lesson_type:
+            type_emoji = "🔬"
+        elif "Семинар" in lesson_type:
+            type_emoji = "💬"
+
+        type_display = lesson_type[:15] + "..." if len(lesson_type) > 15 else lesson_type
+        info_parts.append(f"{type_emoji} {type_display}")
+
+    if info_parts:
+        info_line = " | ".join(info_parts)
+        # Текст информации с эмодзи
+        draw_text_with_emoji(draw, info_line, x, info_y, lesson_text_font, emoji_font, fill=(0, 0, 0))
+
+    return current_y + time_box_height + 8 + 22 + (22 if info_parts else 0) + 12
+
+
+def _render_placeholder_image(image_filename: str, message: str) -> str:
+    """Маленькая картинка-заглушка с текстом — для пустого расписания."""
+    image = Image.new('RGB', (800, 200), color=(245, 247, 250))
+    draw = ImageDraw.Draw(image)
+    try:
+        text_font = ImageFont.truetype(_font_path("G8.otf"), size=24)
+    except IOError:
+        text_font = ImageFont.load_default()
+    draw.text((50, 100), message, fill=(100, 100, 100), font=text_font)
+    image.save(image_filename)
+    return image_filename
+
+
 def generate_timetable_image_from_dict(timetable: list, title: str = "Расписание", week_number: int = None, group_name: str = "") -> str:
     """
     Генерирует красивое изображение с расписанием из словарей (формат public_timetable.py).
@@ -216,33 +435,15 @@ def generate_timetable_image_from_dict(timetable: list, title: str = "Распи
     image_filename = f"timetable_{safe_group_name}_week_{week_number if week_number is not None else 'all'}_{unique_suffix}.png"
 
     if isinstance(timetable, str) or not timetable:
-        # Создаем пустое изображение с сообщением
-        width, height = 800, 200
-        image = Image.new('RGB', (width, height), color=(245, 247, 250))
-        draw = ImageDraw.Draw(image)
-        try:
-            text_font = ImageFont.truetype(_font_path("G8.otf"), size=24)
-        except IOError:
-            text_font = ImageFont.load_default()
         message = "Расписание пусто" if not timetable else timetable
-        draw.text((50, 100), message, fill=(100, 100, 100), font=text_font)
-        image.save(image_filename)
-        return image_filename
+        return _render_placeholder_image(image_filename, message)
 
     # Фильтруем по неделе, если указана
     if week_number is not None:
         timetable = [lesson for lesson in timetable if lesson.get('Номер недели') == week_number]
         if not timetable:
-            width, height = 800, 200
-            image = Image.new('RGB', (width, height), color=(245, 247, 250))
-            draw = ImageDraw.Draw(image)
-            try:
-                text_font = ImageFont.truetype(_font_path("G8.otf"), size=24)
-            except IOError:
-                text_font = ImageFont.load_default()
-            draw.text((50, 100), f"Нет занятий на неделе №{week_number}", fill=(100, 100, 100), font=text_font)
-            image.save(image_filename)
-            return image_filename
+            return _render_placeholder_image(
+                image_filename, f"Нет занятий на неделе №{week_number}")
 
     # Группируем занятия по дням
     days = {}
@@ -306,45 +507,9 @@ def generate_timetable_image_from_dict(timetable: list, title: str = "Распи
         b = int(header_color_start[2] * (1 - ratio) + header_color_end[2] * ratio)
         draw.rectangle([(0, i), (width, i + 1)], fill=(r, g, b))
 
-    # Шрифты - используем Montserrat-SemiBold для текста, seguiemj для цветных эмодзи (COLR)
-    text_font_path = _font_path("Montserrat-SemiBold.ttf")
-    emoji_font_path = _font_path("seguiemj.ttf")
-
-    # Шрифты для текста (Montserrat-SemiBold)
-    try:
-        title_font = ImageFont.truetype(text_font_path, size=36)
-        day_font = ImageFont.truetype(text_font_path, size=24)
-        lesson_title_font = ImageFont.truetype(text_font_path, size=18)
-        lesson_text_font = ImageFont.truetype(text_font_path, size=14)
-        footer_font = ImageFont.truetype(text_font_path, size=14)
-    except IOError:
-        # Fallback на default, если шрифт не найден
-        title_font = ImageFont.load_default()
-        day_font = ImageFont.load_default()
-        lesson_title_font = ImageFont.load_default()
-        lesson_text_font = ImageFont.load_default()
-        footer_font = ImageFont.load_default()
-
-    # Шрифт для цветных эмодзи (seguiemj.ttf с поддержкой COLR - Color Outline)
-    try:
-        # Загружаем seguiemj.ttf который использует COLR формат для цветных эмодзи
-        # COLR шрифты поддерживают обычные размеры, не требуют фиксированного размера
-        # Pillow 10.0.0+ поддерживает COLR через embedded_color=True
-        emoji_font = ImageFont.truetype(emoji_font_path, size=18)
-        emoji_font_small = ImageFont.truetype(emoji_font_path, size=14)
-        logging.info(f"seguiemj.ttf (COLR) загружен для цветных эмодзи из {os.path.abspath(emoji_font_path)}")
-    except IOError as e:
-        logging.error(f"Ошибка при загрузке {emoji_font_path}: {e}")
-        # Fallback на OpenSansEmoji если seguiemj не найден
-        try:
-            emoji_font_path_fallback = _font_path("OpenSansEmoji.ttf")
-            emoji_font = ImageFont.truetype(emoji_font_path_fallback, size=18)
-            emoji_font_small = ImageFont.truetype(emoji_font_path_fallback, size=14)
-            logging.warning("seguiemj.ttf не найден, используем OpenSansEmoji.ttf")
-        except IOError:
-            emoji_font = ImageFont.load_default()
-            emoji_font_small = ImageFont.load_default()
-            logging.warning("Эмодзи шрифты не найдены, используем default")
+    # Шрифты вынесены в _load_timetable_fonts (задача B.1).
+    (title_font, day_font, lesson_title_font, lesson_text_font, footer_font,
+     emoji_font, emoji_font_small) = _load_timetable_fonts()
 
     # Рисуем заголовок с названием группы
     if group_name:
@@ -393,233 +558,24 @@ def generate_timetable_image_from_dict(timetable: list, title: str = "Распи
     block_padding = 15
     block_spacing = 15
 
-    # Функция для отрисовки занятия в новом стиле
-    def draw_lesson_entry(draw, lesson, x, y, max_width, text_font, emoji_font):
-        time_str = lesson.get('Время занятия', 'Не указано')
-        subject = lesson.get('Предмет', 'Не указано')
-        # Полное ФИО, если доступно (задача B.1), иначе — краткое.
-        teacher = lesson.get('ФИО преподавателя (полное)') or lesson.get('ФИО преподавателя', 'Не указано')
-        room = lesson.get('Номер кабинета', 'Не указано')
-        building = lesson.get('Корпус')
-
-        # Форматируем время: заменяем ":" на "."
-        time_formatted = time_str.replace(':', '.')
-
-        current_y = y
-
-        # Более контрастный прямоугольник для времени с белым текстом
-        time_box_height = 28
-        time_box_width = 100
-        time_box_x = x
-        time_box_y = current_y
-
-        # Более темный и контрастный розовый цвет для времени
-        time_color = (219, 112, 147)  # Более насыщенный розовый для лучшего контраста
-        draw_rounded_rectangle(
-            draw, [time_box_x, time_box_y, time_box_x + time_box_width, time_box_y + time_box_height],
-            radius=5, fill=time_color
-        )
-
-        # Белый текст времени
-        try:
-            time_bbox = draw.textbbox((0, 0), time_formatted, font=lesson_text_font)
-            time_text_width = time_bbox[2] - time_bbox[0]
-            time_text_height = time_bbox[3] - time_bbox[1]
-        except:
-            time_text_width = draw.textlength(time_formatted, font=lesson_text_font)
-            time_text_height = 14
-
-        time_text_x = time_box_x + (time_box_width - time_text_width) // 2
-        time_text_y = time_box_y + (time_box_height - time_text_height) // 2
-        draw_text_with_emoji(draw, time_formatted, time_text_x, time_text_y, lesson_text_font, emoji_font, fill=(255, 255, 255))
-
-        # Предмет с эмодзи книги
-        subject_x = x
-        subject_y = current_y + time_box_height + 8
-
-        # Эмодзи книги вместо квадрата
-        book_emoji = "📚"
-        draw_text_with_emoji(draw, book_emoji, subject_x, subject_y, lesson_title_font, emoji_font, fill=(0, 0, 0))
-
-        # Текст предмета
-        subject_display = subject[:43] + "..." if len(subject) > 43 else subject
-        try:
-            emoji_width = draw.textlength(book_emoji, font=emoji_font)
-        except:
-            emoji_width = 20
-        draw_text_with_emoji(draw, subject_display, subject_x + int(emoji_width) + 6, subject_y, lesson_title_font, emoji_font, fill=(0, 0, 0))
-
-        # Преподаватель, кабинет и тип предмета с эмодзи
-        info_y = subject_y + 22
-        info_parts = []
-        # Слитые группы-потоки (расписание преподавателя/аудитории) — см. B.3.
-        groups = lesson.get('Группы')
-        if groups:
-            info_parts.append(f"👥 {', '.join(groups)}")
-        if teacher and teacher != 'Не указано':
-            teacher_display = teacher[:24] + "..." if len(teacher) > 24 else teacher
-            info_parts.append(f"👤 {teacher_display}")  # Используем простой эмодзи вместо составного
-        if room and room != 'Не указано':
-            room_label = f"{room} · {building}" if building else room
-            info_parts.append(f"🏫 {room_label}")
-
-        # Добавляем тип предмета
-        lesson_type = lesson.get('Тип занятия', '')
-        if lesson_type:
-            # Выбираем эмодзи в зависимости от типа занятия
-            type_emoji = "📖"  # По умолчанию
-            if "Лекция" in lesson_type:
-                type_emoji = "📝"
-            elif "Практические" in lesson_type or "Практика" in lesson_type:
-                type_emoji = "✏️"
-            elif "Лабораторная" in lesson_type or "Лаборатория" in lesson_type:
-                type_emoji = "🔬"
-            elif "Семинар" in lesson_type:
-                type_emoji = "💬"
-
-            type_display = lesson_type[:15] + "..." if len(lesson_type) > 15 else lesson_type
-            info_parts.append(f"{type_emoji} {type_display}")
-
-        if info_parts:
-            info_line = " | ".join(info_parts)
-            # Текст информации с эмодзи
-            draw_text_with_emoji(draw, info_line, x, info_y, lesson_text_font, emoji_font, fill=(0, 0, 0))
-
-        return current_y + time_box_height + 8 + 22 + (22 if info_parts else 0) + 12
-
-    # Отрисовываем левый столбик
+    # Отрисовываем левый и правый столбики (задача B.1 — извлечён _draw_day_block).
     y_left = y_start
     for day_name in left_days_order:
         if day_name in days_by_name:
             date, lessons = days_by_name[day_name]
-            lessons_sorted = sorted(lessons, key=lambda x: x.get('Время занятия', '') or '')
+            y_left = _draw_day_block(
+                draw, day_name, date, lessons, x_left, y_left, column_width,
+                day_font, emoji_font, lesson_text_font, lesson_title_font,
+                _LEFT_DAY_EMOJIS, block_padding, block_spacing)
 
-            # Вычисляем высоту блока на основе количества занятий
-            day_header_height = 40
-            block_content_height = len(lessons_sorted) * 80 + block_padding * 2 + day_header_height
-            block_height = max(150, block_content_height)
-
-            # Рисуем белый блок с розовой рамкой для дня
-            draw_rounded_rectangle(
-                draw, [x_left, y_left, x_left + column_width - 20, y_left + block_height],
-                radius=12, fill=(255, 255, 255), outline=(255, 182, 193), width=2
-            )
-
-            # Эмодзи для дней недели
-            day_emojis = {
-                "Понедельник": "💙",
-                "Вторник": "💚",
-                "Среда": "💛",
-                "Четверг": "🧡",
-                "Пятница": "❤️",
-                "Суббота": "💜"
-            }
-            day_emoji = day_emojis.get(day_name, "📅")
-
-            # Заголовок дня недели
-            day_header_text = f"{day_emoji} {day_name}"
-            if date:
-                day_header_text += f" ({date})"
-
-            # Рисуем заголовок дня в верхней части блока
-            header_bg_y = y_left + 5
-            header_bg_height = day_header_height - 10
-            draw_rounded_rectangle(
-                draw, [x_left + 5, header_bg_y, x_left + column_width - 25, header_bg_y + header_bg_height],
-                radius=6, fill=(255, 240, 245), outline=(255, 182, 193), width=1
-            )
-
-            # Текст дня недели - разделяем эмодзи и текст для правильного выравнивания
-            day_emoji = day_emojis.get(day_name, "📅")
-            day_name_text = f"{day_name}"
-            if date:
-                day_name_text += f" ({date})"
-
-            # Рисуем эмодзи
-            draw_text_with_emoji(draw, day_emoji, x_left + 12, header_bg_y + 8, day_font, emoji_font, fill=(100, 50, 100))
-
-            # Вычисляем позицию текста после эмодзи
-            try:
-                emoji_width = draw.textlength(day_emoji, font=emoji_font)
-            except:
-                emoji_width = 25
-
-            # Рисуем текст дня недели, поднимая его выше для выравнивания с эмодзи
-            draw_text_with_emoji(draw, day_name_text, x_left + 12 + int(emoji_width) + 6, header_bg_y + 2, day_font, emoji_font, fill=(100, 50, 100))
-
-            # Отрисовываем занятия в блоке
-            lesson_y = y_left + block_padding + day_header_height
-            for lesson in lessons_sorted:
-                lesson_y = draw_lesson_entry(draw, lesson, x_left + block_padding, lesson_y, column_width - block_padding * 2 - 20, lesson_text_font, emoji_font)
-
-            y_left += block_height + block_spacing
-
-    # Отрисовываем правый столбик
     y_right = y_start
     for day_name in right_days_order:
         if day_name in days_by_name:
             date, lessons = days_by_name[day_name]
-            lessons_sorted = sorted(lessons, key=lambda x: x.get('Время занятия', '') or '')
-
-            # Вычисляем высоту блока на основе количества занятий
-            day_header_height = 40
-            block_content_height = len(lessons_sorted) * 80 + block_padding * 2 + day_header_height
-            block_height = max(150, block_content_height)
-
-            # Рисуем белый блок с розовой рамкой для дня
-            draw_rounded_rectangle(
-                draw, [x_right, y_right, x_right + column_width - 20, y_right + block_height],
-                radius=12, fill=(255, 255, 255), outline=(255, 182, 193), width=2
-            )
-
-            # Эмодзи для дней недели
-            day_emojis = {
-                "Понедельник": "💙",
-                "Вторник": "💚",
-                "Среда": "💛",
-                "Четверг": "💗 ",
-                "Пятница": "❤️",
-                "Суббота": "💜"
-            }
-            day_emoji = day_emojis.get(day_name, "📅")
-
-            # Заголовок дня недели
-            day_header_text = f"{day_emoji} {day_name}"
-            if date:
-                day_header_text += f" ({date})"
-
-            # Рисуем заголовок дня в верхней части блока
-            header_bg_y = y_right + 5
-            header_bg_height = day_header_height - 10
-            draw_rounded_rectangle(
-                draw, [x_right + 5, header_bg_y, x_right + column_width - 25, header_bg_y + header_bg_height],
-                radius=6, fill=(255, 240, 245), outline=(255, 182, 193), width=1
-            )
-
-            # Текст дня недели - разделяем эмодзи и текст для правильного выравнивания
-            day_emoji = day_emojis.get(day_name, "📅")
-            day_name_text = f"{day_name}"
-            if date:
-                day_name_text += f" ({date})"
-
-            # Рисуем эмодзи
-            draw_text_with_emoji(draw, day_emoji, x_right + 12, header_bg_y + 8, day_font, emoji_font, fill=(100, 50, 100))
-
-            # Вычисляем позицию текста после эмодзи
-            try:
-                emoji_width = draw.textlength(day_emoji, font=emoji_font)
-            except:
-                emoji_width = 25
-
-            # Рисуем текст дня недели, поднимая его выше для выравнивания с эмодзи
-            draw_text_with_emoji(draw, day_name_text, x_right + 12 + int(emoji_width) + 6, header_bg_y + 2, day_font, emoji_font, fill=(100, 50, 100))
-
-            # Отрисовываем занятия в блоке
-            lesson_y = y_right + block_padding + day_header_height
-            for lesson in lessons_sorted:
-                lesson_y = draw_lesson_entry(draw, lesson, x_right + block_padding, lesson_y, column_width - block_padding * 2 - 20, lesson_text_font, emoji_font)
-
-            y_right += block_height + block_spacing
+            y_right = _draw_day_block(
+                draw, day_name, date, lessons, x_right, y_right, column_width,
+                day_font, emoji_font, lesson_text_font, lesson_title_font,
+                _RIGHT_DAY_EMOJIS, block_padding, block_spacing)
 
     max_y = max(y_left, y_right) + 20
 
