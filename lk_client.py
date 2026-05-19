@@ -19,6 +19,7 @@ lesson_controller). ``auto_login_user``/``perform_login``/``LessonController``
 остаются в main.py.
 """
 
+import asyncio
 import html
 import json
 import logging
@@ -73,6 +74,50 @@ except ImportError:
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from public_timetable import BonchAPI as TimetableBonchAPI
+
+
+# --- Общий http-хелпер для запросов в ЛК (задача A.1) ------------------------
+
+# База экспоненциального бэкоффа: пауза перед повтором — _LK_RETRY_BACKOFF_SEC
+# * 2**попытка (1.5с, 3с). Вынесена в модульную переменную — тесты её обнуляют.
+_LK_RETRY_BACKOFF_SEC = 1.5
+_LK_RETRIES = 3
+
+
+async def _lk_fetch(session, method: str, url: str, **kwargs) -> tuple[int, str]:
+    """Выполняет HTTP-запрос в ЛК через переданную session с ретраями.
+
+    Возвращает (статус, тело). Тело читается устойчиво — read() + decode с
+    errors='replace' (как в публичном расписании), чтобы усечённый/битый ответ
+    не падал в UnicodeDecodeError. Сетевые сбои, таймауты и ответы 5xx
+    повторяются с экспоненциальным бэкоффом: раньше первая же ошибка сети
+    роняла вход / автоотметку / напоминание — теперь запрос повторяется.
+
+    proxy=None, заголовки, таймаут и cookie_jar берутся из переданной session;
+    семафор ЛК (get_lk_semaphore) остаётся за вызывающим кодом.
+    """
+    request = session.post if method.upper() == "POST" else session.get
+    status, text = 0, ""
+    for attempt in range(_LK_RETRIES):
+        try:
+            async with request(url, proxy=None, **kwargs) as response:
+                status = response.status
+                raw = await response.read()
+                text = raw.decode("utf-8", errors="replace")
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+            if attempt >= _LK_RETRIES - 1:
+                raise
+            logging.warning("Сбой запроса в ЛК (%s) — повтор (попытка %s): %s",
+                             url, attempt + 1, e)
+            await asyncio.sleep(_LK_RETRY_BACKOFF_SEC * (2 ** attempt))
+            continue
+        if status >= 500 and attempt < _LK_RETRIES - 1:
+            logging.warning("ЛК ответил %s на %s — повтор (попытка %s)",
+                            status, url, attempt + 1)
+            await asyncio.sleep(_LK_RETRY_BACKOFF_SEC * (2 ** attempt))
+            continue
+        return status, text
+    return status, text
 
 
 class DebuggableBonchAPI(BonchAPI):
@@ -137,42 +182,38 @@ class DebuggableBonchAPI(BonchAPI):
                     cookie_jar=self.cookie_jar,
                     connector=aiohttp.TCPConnector(force_close=True),
                 ) as session:
-                    # Инициализируем сессию (получаем куки)
-                    async with session.get(CABINET, proxy=None) as response:
-                        if response.status == 403:
-                            body = (await response.text())[:500]
-                            logging.error("403 при открытии CABINET для %s. Тело: %s", email, body)
-                            return False
-                        response.raise_for_status()
+                    # Инициализируем сессию (получаем куки). Каждый запрос —
+                    # через _lk_fetch: ретраи при сетевом сбое/5xx, устойчивое чтение.
+                    status, body = await _lk_fetch(session, "GET", CABINET)
+                    if status >= 400:
+                        logging.error("HTTP %s при открытии CABINET для %s. Тело: %s",
+                                      status, email, body[:500])
+                        return False
 
                     # Некоторым конфигурациям lk нужен ?login=no, оставляем как доп. шаг
-                    async with session.get(f"{CABINET}?login=no", proxy=None) as response:
-                        if response.status == 403:
-                            body = (await response.text())[:500]
-                            logging.error("403 при открытии CABINET?login=no для %s. Тело: %s", email, body)
-                            return False
-                        response.raise_for_status()
+                    status, body = await _lk_fetch(session, "GET", f"{CABINET}?login=no")
+                    if status >= 400:
+                        logging.error("HTTP %s при открытии CABINET?login=no для %s. Тело: %s",
+                                      status, email, body[:500])
+                        return False
 
-                    async with session.post(AUTH, proxy=None) as response:
-                        if response.status == 403:
-                            body = (await response.text())[:500]
-                            logging.error("403 при POST AUTH для %s. Тело: %s", email, body)
-                            return False
-                        response.raise_for_status()
-                        text = await response.text()
+                    status, text = await _lk_fetch(session, "POST", AUTH)
+                    if status >= 400:
+                        logging.error("HTTP %s при POST AUTH для %s. Тело: %s",
+                                      status, email, text[:500])
+                        return False
 
                     # Обрезаем пробелы и переносы строк, так как сервер может возвращать '\n1' вместо '1'
                     text_clean = (text or "").strip()
                     if text_clean == "1":
-                        async with session.get(f"{CABINET}?login=yes", proxy=None) as response:
-                            if response.status == 403:
-                                body = (await response.text())[:500]
-                                logging.error("403 при открытии CABINET?login=yes для %s. Тело: %s", email, body)
-                                return False
-                            response.raise_for_status()
-                            self._refresh_cookies_view()
-                            logging.info("Успешная авторизация для %s", email)
-                            return True
+                        status, body = await _lk_fetch(session, "GET", f"{CABINET}?login=yes")
+                        if status >= 400:
+                            logging.error("HTTP %s при открытии CABINET?login=yes для %s. Тело: %s",
+                                          status, email, body[:500])
+                            return False
+                        self._refresh_cookies_view()
+                        logging.info("Успешная авторизация для %s", email)
+                        return True
 
                     self._refresh_cookies_view()
                     logging.warning(
@@ -221,9 +262,8 @@ class DebuggableBonchAPI(BonchAPI):
                 cookie_jar=self.cookie_jar,
                 connector=aiohttp.TCPConnector(force_close=True),
             ) as session:
-                async with session.get(URL, proxy=None) as response:
-                    text = await response.text()
-                if response.status == 403:
+                status, text = await _lk_fetch(session, "GET", URL)
+                if status == 403:
                     # Оставляем текст как есть (он будет задемплен выше по стеку),
                     # но логируем маленький кусок для быстрого понимания.
                     logging.error("403 Forbidden при получении raspisanie.php. Первые 200 символов: %s", (text or "")[:200])
@@ -448,8 +488,7 @@ class DebuggableBonchAPI(BonchAPI):
             ) as session:
                 for lesson_id in lesson_ids:
                     data = {"open": 1, "rasp": lesson_id, "week": week_param}
-                    async with session.post(URL, data=data, proxy=None) as resp:
-                        text = await resp.text()
+                    status, text = await _lk_fetch(session, "POST", URL, data=data)
 
                     # Проверяем ответ на ошибку авторизации
                     if text and ("login=no" in text or "index.php?login=no" in text):
@@ -457,13 +496,13 @@ class DebuggableBonchAPI(BonchAPI):
                             "Session expired during lesson click - redirect to login=no. Need to re-authenticate."
                         )
 
-                    if resp.status == 200:
+                    if status == 200:
                         clicked += 1
 
                     logging.debug(
                         "Ответ на клик урока %s: статус %s, первые 200 символов: %s",
                         lesson_id,
-                        resp.status,
+                        status,
                         text[:200],
                     )
 

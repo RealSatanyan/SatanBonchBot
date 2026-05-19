@@ -30,6 +30,9 @@ class _FakeResponse:
     async def text(self):
         return self._text
 
+    async def read(self):
+        return self._text.encode("utf-8", errors="replace")
+
 
 class _FakeSession:
     """Заглушка aiohttp.ClientSession: не ходит в сеть, отвечает 200."""
@@ -96,6 +99,7 @@ def test_click_start_lesson_no_candidates_returns_zero(monkeypatch, load_fixture
 def test_click_start_lesson_counts_only_status_200(monkeypatch, load_fixture):
     """Ответ сервера не 200 → клик не засчитывается."""
     html = load_fixture("raspisanie_with_lessons.html")
+    monkeypatch.setattr(lk_client, "_LK_RETRY_BACKOFF_SEC", 0)
 
     class _FailSession(_FakeSession):
         response_status = 500

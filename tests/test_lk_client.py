@@ -9,6 +9,8 @@ DebuggableBonchAPI создаёт aiohttp.CookieJar в __init__, поэтому 
 """
 import asyncio
 
+import pytest
+
 import lk_client
 
 
@@ -27,6 +29,9 @@ class _FakeResponse:
 
     async def text(self):
         return self._text
+
+    async def read(self):
+        return self._text.encode("utf-8", errors="replace")
 
     def raise_for_status(self):
         if self.status >= 400:
@@ -99,6 +104,8 @@ def test_login_fails_on_forbidden(monkeypatch):
 
 
 def test_login_fails_on_network_error(monkeypatch):
+    monkeypatch.setattr(lk_client, "_LK_RETRY_BACKOFF_SEC", 0)
+
     class _BrokenSession(_FakeLoginSession):
         def get(self, url, **kwargs):
             raise ConnectionError("сеть недоступна")
@@ -210,3 +217,118 @@ def test_get_message_parses_json_and_unescapes_html(monkeypatch):
     result = asyncio.run(scenario())
     assert result["name"] == "<Тема>"
     assert result["annotation"] == "&текст"
+
+
+# --- _lk_fetch: ретраи и устойчивое чтение (задача A.1) ----------------------
+
+class _FlakyResponse:
+    """Ответ aiohttp для _lk_fetch: статус + сырое тело (bytes), читается read()."""
+
+    def __init__(self, status=200, body=b"OK"):
+        self.status = status
+        self._body = body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def read(self):
+        return self._body
+
+
+class _ScriptedSession:
+    """session, чьи GET/POST отыгрывают заданный сценарий шагов.
+
+    Шаг — исключение (поднимается) либо _FlakyResponse (возвращается).
+    """
+
+    def __init__(self, steps):
+        self._steps = list(steps)
+        self.calls = 0
+
+    def _next(self, url, **kwargs):
+        self.calls += 1
+        step = self._steps.pop(0)
+        if isinstance(step, BaseException):
+            raise step
+        return step
+
+    def get(self, url, **kwargs):
+        return self._next(url, **kwargs)
+
+    def post(self, url, **kwargs):
+        return self._next(url, **kwargs)
+
+
+def test_lk_fetch_retries_network_error_then_succeeds(monkeypatch):
+    monkeypatch.setattr(lk_client, "_LK_RETRY_BACKOFF_SEC", 0)
+    session = _ScriptedSession([ConnectionError("blip"), _FlakyResponse(200, b"OK")])
+
+    status, text = asyncio.run(lk_client._lk_fetch(session, "GET", "https://lk"))
+
+    assert (status, text) == (200, "OK")
+    assert session.calls == 2  # одна неудача + успешный повтор
+
+
+def test_lk_fetch_retries_server_error_then_succeeds(monkeypatch):
+    monkeypatch.setattr(lk_client, "_LK_RETRY_BACKOFF_SEC", 0)
+    session = _ScriptedSession([
+        _FlakyResponse(503, b""), _FlakyResponse(503, b""), _FlakyResponse(200, b"OK"),
+    ])
+
+    status, text = asyncio.run(lk_client._lk_fetch(session, "GET", "https://lk"))
+
+    assert status == 200
+    assert session.calls == 3
+
+
+def test_lk_fetch_raises_after_exhausting_retries(monkeypatch):
+    monkeypatch.setattr(lk_client, "_LK_RETRY_BACKOFF_SEC", 0)
+    session = _ScriptedSession([ConnectionError("x")] * 3)
+
+    with pytest.raises(OSError):
+        asyncio.run(lk_client._lk_fetch(session, "GET", "https://lk"))
+    assert session.calls == 3  # повторяли, но все попытки провалились
+
+
+def test_lk_fetch_returns_last_5xx_after_exhausting_retries(monkeypatch):
+    monkeypatch.setattr(lk_client, "_LK_RETRY_BACKOFF_SEC", 0)
+    session = _ScriptedSession([_FlakyResponse(503, b"err")] * 3)
+
+    status, _ = asyncio.run(lk_client._lk_fetch(session, "GET", "https://lk"))
+
+    assert status == 503  # после исчерпания повторов отдаём последний ответ
+
+
+def test_lk_fetch_decodes_broken_body_without_crash(monkeypatch):
+    """Битое тело (не UTF-8) не роняет запрос в UnicodeDecodeError."""
+    monkeypatch.setattr(lk_client, "_LK_RETRY_BACKOFF_SEC", 0)
+    session = _ScriptedSession([_FlakyResponse(200, b"\xff\xfe broken")])
+
+    status, text = asyncio.run(lk_client._lk_fetch(session, "GET", "https://lk"))
+
+    assert status == 200
+    assert isinstance(text, str)
+
+
+# --- login: устойчивость к сетевому сбою (частичный сбой) --------------------
+
+def test_login_succeeds_after_transient_network_error(monkeypatch):
+    """Разовый сетевой сбой на первом запросе входа не валит логин — он повторяется."""
+    monkeypatch.setattr(lk_client, "_LK_RETRY_BACKOFF_SEC", 0)
+
+    class _FlakyLoginSession(_FakeLoginSession):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self._first_get = True
+
+        def get(self, url, **kwargs):
+            if self._first_get:
+                self._first_get = False
+                raise ConnectionError("разовый сбой сети")
+            self.gets.append(url)
+            return _FakeResponse(200, "<html>cabinet</html>")
+
+    assert _run_login(_FlakyLoginSession, monkeypatch) is True
