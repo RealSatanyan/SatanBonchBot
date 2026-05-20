@@ -168,6 +168,33 @@ class LessonController:
             if not self.notified:
                 self.notified = True  # Устанавливаем флаг, что уведомление отправлено
 
+            # Gate по расписанию: попадание в сетку времени != «у юзера есть
+            # пара». До фикса click_start_lesson мог постить все 'Начать
+            # занятие' с недельной страницы и в 9:00 досрочно «отметить»
+            # вечерние пары (регрессия 2026-05-20). Спрашиваем расписание
+            # на сегодня для этого номера пары — None ⇒ молчим и пропускаем.
+            current_idx = self._current_lesson_interval_index(now)
+            current_details = None
+            if current_idx is not None:
+                try:
+                    current_details = await self.api.get_current_lesson_details(
+                        now_dt=now_dt, target_pair_index=current_idx
+                    )
+                except Exception:
+                    logging.warning(
+                        "Не удалось проверить расписание перед автокликом для user_id=%s",
+                        self.user_id, exc_info=True,
+                    )
+                    return
+            if current_details is None:
+                logging.info(
+                    "Пара %s в %s не в расписании на сегодня — клик пропускаем (user_id=%s)",
+                    (current_idx + 1) if current_idx is not None else "?",
+                    now_dt.strftime("%H:%M"),
+                    self.user_id,
+                )
+                return
+
             # Пытаемся выполнить клик
             logging.debug("Попытка кликнуть занятие для пользователя %s", self.user_id)
             clicked = await self.api.click_start_lesson(self.user_id)
