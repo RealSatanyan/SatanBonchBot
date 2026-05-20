@@ -19,11 +19,16 @@ from satanbonchbot.lesson_controller import  LessonController
 class _FakeApi:
     """Фейк DebuggableBonchAPI: фиксирует клики/логины без обращения к ЛК."""
 
-    def __init__(self, click_result=0, upcoming_details=None, raw_timetable=""):
+    def __init__(self, click_result=0, upcoming_details=None, raw_timetable="",
+                 current_details=None):
         self.click_result = click_result
         self.upcoming_details = upcoming_details
         self.raw_timetable = raw_timetable
+        # Детали пары, которая сейчас идёт у пользователя (для gate автоотметки):
+        # None ≡ «у юзера нет пары с этим номером сегодня».
+        self.current_details = current_details
         self.click_calls = 0
+        self.current_details_calls = 0
         self.logged_in = None
 
     async def click_start_lesson(self, user_id):
@@ -34,6 +39,10 @@ class _FakeApi:
 
     async def get_upcoming_start_lesson_details(self, **kwargs):
         return self.upcoming_details
+
+    async def get_current_lesson_details(self, now_dt, target_pair_index):
+        self.current_details_calls += 1
+        return self.current_details
 
     async def get_raw_timetable(self):
         if isinstance(self.raw_timetable, BaseException):
@@ -78,10 +87,15 @@ def test_tick_idle_outside_lesson_does_not_click(monkeypatch):
     assert c.notified is False
 
 
+def _lesson_details(pair_number=1, subject="Матан", room="ауд. 101", teacher="Иванов И.И."):
+    """Хелпер: типичный ответ get_current_lesson_details для существующей пары."""
+    return {"pair_number": pair_number, "subject": subject, "room": room, "teacher": teacher}
+
+
 def test_tick_clicks_during_lesson_and_notifies_success(monkeypatch):
     """В интервале пары тик кликает; при clicked>0 шлёт сообщение об автоотметке."""
     _notify(monkeypatch, enabled=False)
-    api, bot = _FakeApi(click_result=1), _FakeBot()
+    api, bot = _FakeApi(click_result=1, current_details=_lesson_details()), _FakeBot()
     c = _controller(api, bot)
 
     asyncio.run(c._run_tick(datetime(2026, 5, 19, 9, 30)))
@@ -91,10 +105,27 @@ def test_tick_clicks_during_lesson_and_notifies_success(monkeypatch):
     assert "Автоотметка" in bot.sent[0][1]
 
 
+def test_tick_skips_click_when_pair_absent_from_schedule(monkeypatch):
+    """Регрессия 2026-05-20: время попало в сетку пар, но у пользователя нет
+    пары с этим номером сегодня → клик НЕ делаем и ✅ НЕ шлём.
+
+    До фикса click_start_lesson постила все 'Начать занятие' с недельной
+    страницы, что в 9:00 кликало вечерние пары и спамило ложные ✅.
+    """
+    _notify(monkeypatch, enabled=False)
+    api, bot = _FakeApi(click_result=1, current_details=None), _FakeBot()
+    c = _controller(api, bot)
+
+    asyncio.run(c._run_tick(datetime(2026, 5, 19, 9, 30)))
+
+    assert api.click_calls == 0
+    assert bot.sent == []
+
+
 def test_tick_click_returns_zero_no_success_message(monkeypatch):
     """clicked==0 (кандидатов нет) — клик был, но сообщения об успехе нет."""
     _notify(monkeypatch, enabled=False)
-    api, bot = _FakeApi(click_result=0), _FakeBot()
+    api, bot = _FakeApi(click_result=0, current_details=_lesson_details()), _FakeBot()
     c = _controller(api, bot)
 
     asyncio.run(c._run_tick(datetime(2026, 5, 19, 9, 30)))
@@ -107,7 +138,8 @@ def test_tick_propagates_value_error_from_click(monkeypatch):
     """ValueError из click_start_lesson (истёкшая сессия) пробрасывается из тика —
     цикл start_lesson ловит его и запускает переавторизацию."""
     _notify(monkeypatch, enabled=False)
-    api = _FakeApi(click_result=ValueError("Session expired"))
+    api = _FakeApi(click_result=ValueError("Session expired"),
+                   current_details=_lesson_details())
     c = _controller(api, _FakeBot())
 
     with pytest.raises(ValueError):
