@@ -34,6 +34,7 @@ from satanbonchbot.lesson_controller import  LessonController
 from satanbonchbot import db
 from satanbonchbot.db import  get_autoclick_enabled
 from satanbonchbot import parsers
+from satanbonchbot import timetable_cache
 from satanbonchbot.security import  decrypt_password, encrypt_password
 
 LOGIN_CMD_RE = re.compile(r"^/login(?:@\w+)?\s+(\S+)\s+(\S+)\s*$")
@@ -66,6 +67,27 @@ def parse_login_credentials(message_text: str) -> tuple[str, str] | None:
     return email, password
 
 
+def _detect_first_day(html: str) -> None:
+    """
+    Уточняет опорную дату FIRST_DAY (см. timetable_cache.get_first_day) из
+    той же страницы личного расписания: заголовок несёт номер недели и её
+    календарный диапазон, так что FIRST_DAY определяется автоматически на
+    каждом логине/переопределении группы и не требует ручного обновления
+    в .env раз в семестр.
+
+    Ошибки не пробрасывает — это побочный шаг, как и определение группы.
+    """
+    try:
+        week = parsers.parse_week_number(html)
+        week_monday = parsers.parse_week_start_date(html)
+        if not week or not week_monday:
+            return
+        first_day = parsers.compute_first_day(week, week_monday)
+        timetable_cache._write_first_day_cache(first_day.isoformat())
+    except Exception:
+        logging.warning("Не удалось уточнить FIRST_DAY по личному расписанию", exc_info=True)
+
+
 async def detect_user_group(user_id: int, api) -> None:
     """
     Определяет учебную группу пользователя из ЛК (страница raspisanie.php)
@@ -82,6 +104,7 @@ async def detect_user_group(user_id: int, api) -> None:
             logging.info("Группа пользователя %s определена: %s", user_id, group)
         else:
             logging.info("Группа пользователя %s не найдена на странице расписания", user_id)
+        _detect_first_day(html)
     except Exception:
         logging.warning("Не удалось определить группу пользователя %s", user_id, exc_info=True)
 
@@ -108,9 +131,12 @@ async def auto_login_user(user_id):
 
         lesson_controller.controllers[user_id] = LessonController(lk_client.apis[user_id], bot, user_id)  # Передаем bot и user_id
 
-        # Определяем группу пользователя (C.0), если ещё не известна.
-        if not db.get_user_group(user_id):
-            await detect_user_group(user_id, lk_client.apis[user_id])
+        # Определяем группу (C.0) и уточняем FIRST_DAY (см. _detect_first_day)
+        # на каждом логине, а не только пока группа неизвестна: иначе для
+        # пользователей с уже сохранённой группой автоопределение FIRST_DAY
+        # ждало бы до ближайшего фонового _redetect_user_groups (раз в
+        # GROUP_REDETECT_HOURS, по умолчанию сутки).
+        await detect_user_group(user_id, lk_client.apis[user_id])
 
         logging.info("✅ Пользователь %s успешно автоматически авторизован.", user_id)
         return True

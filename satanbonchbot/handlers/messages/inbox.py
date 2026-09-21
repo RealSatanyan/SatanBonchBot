@@ -117,8 +117,12 @@ async def handle_message_callback(callback_query: CallbackQuery):
             if index >= len(state['messages']) and state.get('loaded_pages', 1) < state.get('total_pages', 1):
                 next_page = state.get('loaded_pages', 1) + 1
                 page_data = await state['api'].get_messages_page(next_page)
-                state['messages'].extend(page_data['messages'])
-                state['loaded_pages'] = next_page
+                # Только если реально что-то пришло: сбой/пустой ответ не
+                # должен помечать страницу как «загруженную» — иначе она
+                # молча теряется навсегда, вместо ретрая при следующем клике.
+                if page_data.get('messages'):
+                    state['messages'].extend(page_data['messages'])
+                    state['loaded_pages'] = next_page
             if index < len(state['messages']):
                 state['current_index'] = index
                 await callback_query.answer()
@@ -151,43 +155,51 @@ async def handle_message_callback(callback_query: CallbackQuery):
                         msg_info = msg
                         break
 
-            # Формируем текст сообщения
-            title = message_data.get("name", msg_info.get("title", "Без названия") if msg_info else "Без названия")
-            annotation = message_data.get("annotation", "Нет текста")
+            # Формируем текст сообщения.
+            # parse_mode='HTML': Telegram ронял 400 «can't parse entities» в
+            # Markdown-режиме при несбалансированных `*`/`_`/`[` в теле письма
+            # от ЛК. В HTML экранируем только <,>,& через html.escape — остальные
+            # символы (включая `*`/`_`) остаются литералами.
+            # `or`, а не .get(key, default): ЛК может вернуть name/annotation
+            # как ПРИСУТСТВУЮЩИЙ, но пустой ключ (уведомление без темы/текста,
+            # только вложение) — .get(key, default) в этом случае default не
+            # применяет, и сообщение открывалось бы с пустым заголовком/телом.
+            title = message_data.get("name") or (msg_info.get("title") if msg_info else None) or "Без названия"
+            annotation = message_data.get("annotation") or "Нет текста"
 
             # Декодируем HTML и удаляем теги
             if annotation:
                 annotation = html.unescape(annotation)
                 annotation = re.sub(r'<[^>]+>', '', annotation)
 
-            text = f"📋 *{title}*\n\n"
+            text = f"📋 <b>{html.escape(title)}</b>\n\n"
             if msg_info:
-                text += f"📅 *Дата:* {msg_info.get('date', 'Не указана')}\n"
-                text += f"👤 *Отправитель:* {msg_info.get('sender', 'Неизвестно')}\n"
+                text += f"📅 <b>Дата:</b> {html.escape(str(msg_info.get('date', 'Не указана')))}\n"
+                text += f"👤 <b>Отправитель:</b> {html.escape(str(msg_info.get('sender', 'Неизвестно')))}\n"
                 text += "━━━━━━━━━━━━━━━━━━━━\n\n"
 
-            text += f"{annotation}\n\n"
+            text += f"{html.escape(annotation)}\n\n"
             text += "━━━━━━━━━━━━━━━━━━━━\n"
 
             if msg_info and msg_info.get("files"):
-                text += "\n📎 *Файлы:*\n"
+                text += "\n📎 <b>Файлы:</b>\n"
                 for file_info in msg_info["files"]:
                     file_name = file_info.get("name", "Файл")
                     file_url = file_info.get("url", "")
                     if file_url:
-                        # Используем Markdown формат для ссылки: [текст](url)
-                        # Экранируем специальные символы в URL и имени файла для Markdown
-                        file_name_escaped = file_name.replace("_", "\\_").replace("*", "\\*").replace("[", "\\[").replace("]", "\\]")
-                        text += f"  • [{file_name_escaped}]({file_url})\n"
+                        # HTML-якорь: атрибут href требует экранирования " и &.
+                        # html.escape(url, quote=True) покрывает оба случая.
+                        href = html.escape(file_url, quote=True)
+                        text += f'  • <a href="{href}">{html.escape(file_name)}</a>\n'
                     else:
-                        text += f"  • {file_name}\n"
+                        text += f"  • {html.escape(file_name)}\n"
 
-            text += f"\n🆔 ID: `{message_id}`"
+            text += f"\n🆔 ID: <code>{html.escape(str(message_id))}</code>"
 
             keyboard = [[InlineKeyboardButton(text="🔙 Назад к списку", callback_data="msg_back_to_list")]]
             reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-            await callback_query.message.answer(text, parse_mode="Markdown", reply_markup=reply_markup)
+            await callback_query.message.answer(text, parse_mode="HTML", reply_markup=reply_markup)
             await callback_query.message.delete()
 
         elif data == "msg_refresh":

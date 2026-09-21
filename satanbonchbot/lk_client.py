@@ -26,7 +26,6 @@ import logging
 import os
 import re
 import time as time_module
-import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -39,6 +38,7 @@ from yarl import URL as YarlURL
 from bonchapi import BonchAPI, parser
 
 from satanbonchbot import parsers
+from satanbonchbot import timetable_cache
 from satanbonchbot.config import  get_lk_semaphore, LESSON_INTERVALS, BROWSER_HEADERS, USER_AGENT
 from satanbonchbot.monitoring import  _note_parser_failure
 
@@ -162,11 +162,11 @@ class DebuggableBonchAPI(BonchAPI):
         Переопределяем метод login для использования HTTPS вместо HTTP.
         Исправляет проблему "The plain HTTP request was sent to HTTPS port".
         """
-        # users/parole идут в query-строку — percent-кодируем, иначе спецсимвол
-        # в пароле (`&`, `#`, `%`, пробел) молча исказит значение (A.2).
-        email_q = urllib.parse.quote(email, safe='')
-        password_q = urllib.parse.quote(password, safe='')
-        AUTH = f'https://lk.sut.ru/cabinet/lib/autentificationok.php?users={email_q}&parole={password_q}'
+        # Реальная страница логинит через jQuery $.post(url, {users, parole}) —
+        # тело формы, а не query-строка (см. js_new/ajax.js: putLoginTo).
+        # POST с кредами в query-строке и пустым телом отличим от AJAX-запроса
+        # браузера и попадает под WAF lk.sut.ru (403 на ровном месте).
+        AUTH = 'https://lk.sut.ru/cabinet/lib/autentificationok.php'
         CABINET = 'https://lk.sut.ru/cabinet/'
 
         headers = {
@@ -206,7 +206,14 @@ class DebuggableBonchAPI(BonchAPI):
                                       status, email, body[:500])
                         return False
 
-                    status, text = await _lk_fetch(session, "POST", AUTH)
+                    status, text = await _lk_fetch(
+                        session, "POST", AUTH,
+                        data={"users": email, "parole": password},
+                        headers={
+                            "X-Requested-With": "XMLHttpRequest",
+                            "Origin": "https://lk.sut.ru",
+                        },
+                    )
                     if status >= 400:
                         logging.error("HTTP %s при POST AUTH для %s. Тело: %s",
                                       status, email, text[:500])
@@ -224,7 +231,12 @@ class DebuggableBonchAPI(BonchAPI):
                         logging.info("Успешная авторизация для %s", email)
                         return True
 
-                    self._refresh_cookies_view()
+                    # НЕ обновляем self.cookies здесь: анонимные GET на CABINET/
+                    # CABINET?login=no уже положили PHPSESSID в cookie_jar ДО AUTH
+                    # POST, так что _refresh_cookies_view() сделала бы self.cookies
+                    # truthy несмотря на провалившийся логин — вызывающие, которые
+                    # проверяют cookies вместо возврата login(), решили бы, что
+                    # сессия рабочая (см. lk_messages.get_message_api).
                     logging.warning(
                         "Ошибка авторизации для %s: ответ сервера '%s' (очищенный: '%s')",
                         email,
@@ -235,6 +247,26 @@ class DebuggableBonchAPI(BonchAPI):
         except Exception as e:
             logging.error("Ошибка при авторизации для %s: %s", email, e, exc_info=True)
             return False
+
+    async def get_timetable(self, week_number: int = False, *, week_offset: int = False):
+        """
+        Переопределяем BonchAPI.get_timetable: базовая реализация считает
+        desired_week = current_week + week_offset + self._first_week — для
+        личного расписания это уводит на несуществующую неделю на месяцы
+        вперёд (напр. week_offset=1 при current_week=1 и _first_week=23 даёт
+        неделю 25, хотя реальная «следующая» — простое current_week+1=2).
+        week= в raspisanie.php — последовательная нумерация в рамках личного
+        расписания текущего семестра, никак не связанная с _first_week
+        (это поле нужно другим сценариям bonchapi, не постраничной
+        навигации «вперёд/назад» по личному расписанию). Регрессия не была
+        заметна раньше: пока прокси в ЛК был мёртв, запрос падал сетевой
+        ошибкой ещё до того, как это могло проявиться.
+        """
+        if not week_offset:
+            return await parser.get_my_lessons(await self.get_raw_timetable(week_number))
+        current_week = await parser.get_week(await self.get_raw_timetable(week_number))
+        desired_week = current_week + week_offset
+        return await parser.get_my_lessons(await self.get_raw_timetable(desired_week))
 
     async def get_raw_timetable(self, week_number: int = False) -> str:
         """
@@ -276,9 +308,26 @@ class DebuggableBonchAPI(BonchAPI):
                     # Оставляем текст как есть (он будет задемплен выше по стеку),
                     # но логируем маленький кусок для быстрого понимания.
                     logging.error("403 Forbidden при получении raspisanie.php. Первые 200 символов: %s", (text or "")[:200])
-                # ЛК иногда возвращает короткое сообщение вместо HTML при протухшей сессии
+                # ЛК иногда возвращает короткое сообщение вместо HTML при протухшей сессии.
+                # Бросаем здесь же (а не отдаём текст ошибки как есть) — единая точка для
+                # ВСЕХ вызывающих (get_timetable, get_current_lesson_details,
+                # click_start_lesson...). Раньше это решал каждый вызывающий сам, и
+                # get_current_lesson_details тихо парсил ERR_MSG как «пары сегодня нет»
+                # (искал <table>, не находил, отдавал None) — истёкшая сессия была
+                # неотличима от легитимного отсутствия пары, и переавторизация никогда
+                # не запускалась (регрессия хотфикса 5f2bfba, gate дергает именно этот
+                # путь раньше click_start_lesson).
                 if (text or "").strip() == ERR_MSG:
                     logging.warning("ЛК вернул ERR_MSG вместо расписания — похоже, сессия истекла.")
+                    raise ValueError("Session expired - ERR_MSG from LK. Need to re-authenticate.")
+                # Второй сигнал протухшей сессии — редирект на login=no. Тот же
+                # аргумент, что и для ERR_MSG выше: раньше это проверял только
+                # click_start_lesson, а get_current_lesson_details/
+                # get_upcoming_start_lesson_details тихо не находили <table> в
+                # этом HTML и отдавали None — неотличимо от «пары сегодня нет».
+                if "login=no" in (text or ""):
+                    logging.warning("ЛК вернул редирект на login=no — сессия истекла.")
+                    raise ValueError("Session expired - redirect to login=no. Need to re-authenticate.")
                 self._refresh_cookies_view()
                 if use_cache:
                     self._raw_timetable_cache_html = text
@@ -419,16 +468,10 @@ class DebuggableBonchAPI(BonchAPI):
 
     async def click_start_lesson(self, user_id=None) -> int:
         URL = "https://lk.sut.ru/cabinet/project/cabinet/forms/raspisanie.php"
-        ERR_MSG = "У Вас нет прав доступа. Или необходимо перезагрузить приложение.."
 
+        # ERR_MSG и login=no (сессия протухла) теперь ловит и бросает сам
+        # get_raw_timetable — единая точка для всех вызывающих, см. его комментарий.
         timetable = await self.get_raw_timetable()
-
-        # Проверяем, не является ли ответ редиректом на login=no (истекшая сессия)
-        if timetable and ("login=no" in timetable or "index.php?login=no" in timetable):
-            raise ValueError("Session expired - redirect to login=no. Need to re-authenticate.")
-        # Сессия может “протухнуть” и вернуться коротким текстом
-        if (timetable or "").strip() == ERR_MSG:
-            raise ValueError("Session expired - ERR_MSG from LK. Need to re-authenticate.")
 
         # Отдельный кейс: в ЛК нет назначенной группы -> расписания и кнопок не будет
         if "Ваша группа не определена" in (timetable or ""):
@@ -688,10 +731,9 @@ async def get_timetable_api():
     """
     global timetable_api
     if timetable_api is None:
-        # Используем дату начала семестра (можно вынести в конфигурацию)
-        # По умолчанию используем текущую дату начала семестра
-        # Можно получить из переменной окружения или использовать значение по умолчанию
-        first_day = os.getenv('FIRST_DAY', '2026-02-03')  # Пример даты
+        # Автоопределённый (из личного расписания ЛК) > ручной .env override >
+        # захардкоженный fallback — см. timetable_cache.get_first_day().
+        first_day = timetable_cache.get_first_day()
         timetable_api = TimetableBonchAPI(first_day=first_day)
         # Как в CLI версии: сначала загружаем schet и группы
         await timetable_api.get_schet()

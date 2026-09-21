@@ -12,6 +12,22 @@ import pytz
 from satanbonchbot.parsers import  split_room_building
 
 
+_MARKDOWN_SPECIAL_CHARS_RE = re.compile(r'([_*`\[])')
+
+
+def _escape_markdown(text) -> str:
+    """Экранирует спецсимволы legacy Telegram Markdown (_, *, `, [) в
+    скрейпленном тексте (предмет/преподаватель/аудитория и т.п.).
+
+    Без этого один непарный спецсимвол в любом из этих полей роняет весь
+    message.answer/edit_text с parse_mode='Markdown' ('can't parse entities') —
+    валидное расписание целиком превращается в общее сообщение об ошибке.
+    """
+    if not text:
+        return text
+    return _MARKDOWN_SPECIAL_CHARS_RE.sub(r'\\\1', str(text))
+
+
 def filter_group_lessons_by_date(timetable, date_str: str) -> list:
     """Занятия группы (дикт-формат) на дату вида '2026.05.18' (поле 'Число')."""
     if not isinstance(timetable, list):
@@ -116,19 +132,19 @@ def format_timetable(timetable, title: str = "Ваше расписание", gr
     sorted_days = sorted(days.items(), key=lambda x: datetime.strptime(x[0], "%Y-%m-%d"))
 
     for date, lessons in sorted_days:
-        formatted_timetable += f"----------------------\n📌 *{date} ({lessons[0].day})*\n"
+        formatted_timetable += f"----------------------\n📌 *{_escape_markdown(date)} ({_escape_markdown(lessons[0].day)})*\n"
         for lesson in lessons:
             teacher = resolve_teacher_full_name(lesson, full_name_index)
             room, building = split_room_building(lesson.location)
-            room_line = f"🏫 {room}"
+            room_line = f"🏫 {_escape_markdown(room)}"
             if building:
-                room_line += f" · корпус {building}"
+                room_line += f" · корпус {_escape_markdown(building)}"
             formatted_timetable += (
-                f"⏰ *{lesson.time}* \n"
-                f"📚 {lesson.subject} \n"
-                f"🎓 {teacher} \n"
+                f"⏰ *{_escape_markdown(lesson.time)}* \n"
+                f"📚 {_escape_markdown(lesson.subject)} \n"
+                f"🎓 {_escape_markdown(teacher)} \n"
                 f"{room_line} \n"
-                f"🔹 Тип: {lesson.lesson_type}\n\n"
+                f"🔹 Тип: {_escape_markdown(lesson.lesson_type)}\n\n"
             )
 
     return formatted_timetable
@@ -219,7 +235,7 @@ def format_timetable_dict(timetable: list, title: str = "Расписание", 
 
     for date, lessons in sorted_days:
         day_name = lessons[0].get('День недели', '')
-        formatted_timetable += f"----------------------\n📌 *{date} ({day_name})*\n"
+        formatted_timetable += f"----------------------\n📌 *{_escape_markdown(date)} ({_escape_markdown(day_name)})*\n"
 
         # Сортируем занятия по времени
         lessons_sorted = sorted(lessons, key=lambda x: x.get('Время занятия', '') or '')
@@ -235,21 +251,21 @@ def format_timetable_dict(timetable: list, title: str = "Расписание", 
             group = lesson.get('Группа', '')
             groups = lesson.get('Группы')
 
-            formatted_timetable += f"⏰ *{time_str}*\n"
-            formatted_timetable += f"📚 {subject}\n"
+            formatted_timetable += f"⏰ *{_escape_markdown(time_str)}*\n"
+            formatted_timetable += f"📚 {_escape_markdown(subject)}\n"
             if groups:
-                formatted_timetable += f"👥 Группы: {', '.join(groups)}\n"
+                formatted_timetable += f"👥 Группы: {', '.join(_escape_markdown(g) for g in groups)}\n"
             elif group:
-                formatted_timetable += f"👥 Группа: {group}\n"
+                formatted_timetable += f"👥 Группа: {_escape_markdown(group)}\n"
             if teacher and teacher != 'Не указано':
-                formatted_timetable += f"🎓 {teacher}\n"
+                formatted_timetable += f"🎓 {_escape_markdown(teacher)}\n"
             if room and room != 'Не указано':
-                room_line = f"🏫 {room}"
+                room_line = f"🏫 {_escape_markdown(room)}"
                 if building:
-                    room_line += f" · корпус {building}"
+                    room_line += f" · корпус {_escape_markdown(building)}"
                 formatted_timetable += room_line + "\n"
             if lesson_type:
-                formatted_timetable += f"🔹 Тип: {lesson_type}\n"
+                formatted_timetable += f"🔹 Тип: {_escape_markdown(lesson_type)}\n"
             formatted_timetable += "\n"
 
     return formatted_timetable

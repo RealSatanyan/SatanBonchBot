@@ -185,6 +185,13 @@ async def cmd_timetable(message: types.Message, uid: int = None):
 
         await message.answer(formatted_timetable, parse_mode="Markdown", reply_markup=reply_markup)
 
+    except ValueError as e:
+        if "Session expired" in str(e):
+            logging.warning("Сессия ЛК истекла при получении расписания для user_id=%s", user_id)
+            await message.answer("⚠️ Сессия ЛК истекла. Выполните /login для повторной авторизации.")
+        else:
+            logging.error("Ошибка при получении расписания: %s", e, exc_info=True)
+            await message.answer("⚠️ Не удалось загрузить расписание. Попробуй позже.")
     except Exception as e:
         logging.error("Ошибка при получении расписания: %s", e, exc_info=True)
         await message.answer("⚠️ Не удалось загрузить расписание. Попробуй позже.")

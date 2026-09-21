@@ -319,6 +319,34 @@ def test_message_navigation_next_lazy_loads_next_page(monkeypatch, reset_message
     assert shown == [1]
 
 
+def test_message_navigation_next_page_fetch_fails_does_not_advance_loaded_pages(monkeypatch, reset_message_states):
+    """Регрессия: если подгрузка следующей страницы не удалась/вернула пусто
+    (сетевой сбой, ЛК отдал ERRNO — lk_client.get_messages_page это глотает и
+    возвращает {'messages': []}), loaded_pages раньше всё равно увеличивался.
+    Страница молча считалась «загруженной» с нулём сообщений — пользователь
+    терял её навсегда (до /messages заново), без единой ошибки на экране."""
+    from satanbonchbot import messages_service
+
+    class FailingApi:
+        async def get_messages_page(self, page):
+            return {"messages": [], "total_pages": 2}
+
+    async def fake_show(user_id, chat_id, index):
+        pass
+
+    monkeypatch.setattr(inbox_mod, "show_message_list", fake_show)
+    messages_service.message_states[1] = {
+        "api": FailingApi(), "messages": [{"id": "m1"}],
+        "total_pages": 2, "loaded_pages": 1, "current_index": 0,
+    }
+
+    asyncio.run(handle_message_callback(FakeCallbackQuery(user_id=1, data="msg_next_0")))
+
+    state = messages_service.message_states[1]
+    assert state["loaded_pages"] == 1
+    assert len(state["messages"]) == 1
+
+
 # --- C.2 №3: cmd_send_lk — парсинг аргументов --------------------------------
 
 def test_send_lk_numeric_id_sends_directly(monkeypatch):
@@ -390,6 +418,83 @@ def test_message_open_renders_message(monkeypatch, reset_message_states):
     asyncio.run(handle_message_callback(cb))
 
     assert any("Тема письма" in a["text"] for a in cb.message.answers)
+
+
+def test_message_open_falls_back_when_name_and_annotation_are_empty_strings(monkeypatch, reset_message_states):
+    """Регрессия: ЛК может вернуть 'name'/'annotation' как ПУСТУЮ строку, а не
+    отсутствующий ключ (например, уведомление только с вложением, без темы и
+    текста). dict.get(key, default) не срабатывает, если ключ есть, — раньше
+    открытое сообщение показывало '<b></b>' вместо заголовка из списка
+    (msg_info['title']) и вместо плейсхолдера 'Нет текста'."""
+    from satanbonchbot import messages_service
+
+    class FakeApi:
+        async def get_message(self, message_id):
+            return {"name": "", "annotation": ""}
+
+    async def fake_get_api(user_id):
+        return FakeApi()
+
+    monkeypatch.setattr(inbox_mod, "get_message_api", fake_get_api)
+    messages_service.message_states[1] = {
+        "messages": [{"id": "m1", "title": "Тема из списка", "sender": "Деканат"}],
+    }
+
+    cb = FakeCallbackQuery(user_id=1, data="msg_open_m1")
+    asyncio.run(handle_message_callback(cb))
+
+    text = cb.message.answers[0]["text"]
+    assert "Тема из списка" in text
+    assert "Нет текста" in text
+
+
+def test_message_open_uses_html_and_escapes_unbalanced_markdown(monkeypatch, reset_message_states):
+    """Тело сообщения с висячим `_` и `<` не должно ронять Telegram-парсер.
+
+    Регрессия inbox.py:190 — при parse_mode='Markdown' любой несбалансированный
+    `*`/`_`/`[` в annotation/title/sender вызывал Telegram 400 «can't parse
+    entities». Рендер обязан использовать HTML и экранировать <,>,& в
+    пользовательском контенте; символы Markdown остаются литералами.
+    """
+    from satanbonchbot import messages_service
+
+    class FakeApi:
+        async def get_message(self, message_id):
+            return {
+                "name": "Практика_№8 ТЭС",
+                # `<...>` стрипается tag-cleanup'ом до отправки — это
+                # отдельная фича. Здесь проверяем, что выживший контент
+                # с `_` и `&` корректно уходит в HTML-режиме.
+                "annotation": "Сдать до 25_05; см. A&B",
+            }
+
+    async def fake_get_api(user_id):
+        return FakeApi()
+
+    monkeypatch.setattr(inbox_mod, "get_message_api", fake_get_api)
+    messages_service.message_states[1] = {
+        "messages": [{
+            "id": "m1",
+            "title": "Практика_№8 ТЭС",
+            "sender": "Виноградов <ВБ>",
+            "files": [{"name": "task_8.pdf", "url": "https://lk.example/file?id=1&t=2"}],
+        }],
+    }
+
+    cb = FakeCallbackQuery(user_id=1, data="msg_open_m1")
+    asyncio.run(handle_message_callback(cb))
+
+    sent = next(a for a in cb.message.answers if "Практика" in a["text"])
+    assert sent.get("parse_mode") == "HTML"
+    text = sent["text"]
+    # < > & в динамических полях экранированы:
+    assert "&lt;ВБ&gt;" in text
+    assert "A&amp;B" in text
+    # Подчёркивание — литерал, не должно открывать entity:
+    assert "Практика_№8" in text
+    assert "25_05" in text
+    # Ссылка на файл — HTML-якорь с экранированным & в URL:
+    assert 'href="https://lk.example/file?id=1&amp;t=2"' in text
 
 
 def test_message_back_to_list_returns(monkeypatch, reset_message_states):
@@ -524,7 +629,10 @@ def test_send_lk_multiple_results_offers_choice(monkeypatch):
 
 def test_lk_send_callback_sends_pending_message(monkeypatch):
     from satanbonchbot import messages_service
-    messages_service.pending_lk_messages[(1, 77)] = {"text": "тело", "title": "", "label": "Х"}
+    # Ключ (user_id, batch_id, recipient_id): batch_id отвязывает pending-запись
+    # от конкретного поиска (см. test_lk_send_overlapping_recipient_* ниже) —
+    # значение произвольное, тест сам конструирует и запись, и callback_data.
+    messages_service.pending_lk_messages[(1, 0, 77)] = {"text": "тело", "title": "", "label": "Х"}
 
     async def fake_get_api(uid):
         return object()
@@ -538,9 +646,51 @@ def test_lk_send_callback_sends_pending_message(monkeypatch):
     monkeypatch.setattr(messages_mod, "get_message_api", fake_get_api)
     monkeypatch.setattr(messages_mod, "lk_send_message", fake_send)
 
-    asyncio.run(handle_lk_send_callback(FakeCallbackQuery(user_id=1, data="lk_send_77")))
+    asyncio.run(handle_lk_send_callback(FakeCallbackQuery(user_id=1, data="lk_send_0_77")))
 
     assert sent and sent[0]["recipient_id"] == 77
+
+
+def test_lk_send_overlapping_recipient_across_two_searches_does_not_cross_contaminate(monkeypatch):
+    """Регрессия: pending_lk_messages был ключом (user_id, recipient_id) без
+    привязки к конкретному поиску. Второй /send_lk с тем же получателем
+    (обычный случай — один и тот же человек попадает в оба списка результатов)
+    затирал текст первого, ещё не выбранного, сообщения. Нажатие кнопки на
+    ПЕРВОЙ (всё ещё видимой пользователю) клавиатуре отправляло текст ВТОРОГО
+    сообщения — не то, что пользователь выбирал."""
+    from satanbonchbot import messages_service
+    messages_service.pending_lk_messages.clear()
+
+    async def fake_get_api(uid):
+        return object()
+
+    async def fake_search(api, query):
+        return [{"id": 1, "label": "Иванов И.И."}, {"id": 2, "label": "Иванов И.П."}]
+
+    monkeypatch.setattr(messages_mod, "get_message_api", fake_get_api)
+    monkeypatch.setattr(messages_mod, "lk_search_recipients", fake_search)
+
+    msg1 = FakeMessage(text="/send_lk Иванов Текст-раз", user_id=1)
+    asyncio.run(cmd_send_lk(msg1))
+    first_keyboard = msg1.replies[0].edits[-1]["reply_markup"]
+    first_callback_data = first_keyboard.inline_keyboard[0][0].callback_data
+
+    msg2 = FakeMessage(text="/send_lk Иванов Текст-два", user_id=1)
+    asyncio.run(cmd_send_lk(msg2))
+
+    sent = []
+
+    async def fake_send(**kwargs):
+        sent.append(kwargs)
+        return True
+
+    monkeypatch.setattr(messages_mod, "lk_send_message", fake_send)
+
+    # Пользователь жмёт кнопку с ПЕРВОЙ, ещё не устаревшей на экране клавиатуры.
+    asyncio.run(handle_lk_send_callback(FakeCallbackQuery(user_id=1, data=first_callback_data)))
+
+    assert sent and sent[0]["message_text"] == "Текст-раз"
+    messages_service.pending_lk_messages.clear()
 
 
 # --- C.2: остальные шаги диалога «Написать» ----------------------------------

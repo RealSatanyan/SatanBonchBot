@@ -25,6 +25,7 @@ from satanbonchbot.keyboards import  cancel_kb, get_group_week_navigation_button
 from satanbonchbot.lk_client import  get_timetable_api
 from satanbonchbot import timetable_service
 from satanbonchbot.timetable_service import  get_all_groups_timetable
+from satanbonchbot.handlers.schedule import  common as sched_common
 from satanbonchbot.formatting import  (
     format_timetable_dict,
     filter_group_lessons_by_date,
@@ -96,16 +97,21 @@ async def process_group_week_navigation(callback_query: CallbackQuery):
 
                 # Проверяем, что файл существует
                 if os.path.exists(image_path):
-                    photo = FSInputFile(image_path)
-                    await callback_query.message.answer_photo(
-                        photo,
-                        caption=f"📅 Расписание группы {group_name} (Неделя №{week_number})"
-                    )
-                    # Удаляем временный файл после отправки
+                    # try/finally: временный файл должен удаляться даже если
+                    # answer_photo упадёт (сеть, лимиты Telegram) — иначе он
+                    # остаётся на диске навсегда (было: os.remove только
+                    # на успешном пути, как в personal.py).
                     try:
-                        os.remove(image_path)
-                    except Exception as e:
-                        logging.warning(f"Не удалось удалить временный файл {image_path}: {e}")
+                        photo = FSInputFile(image_path)
+                        await callback_query.message.answer_photo(
+                            photo,
+                            caption=f"📅 Расписание группы {group_name} (Неделя №{week_number})"
+                        )
+                    finally:
+                        try:
+                            os.remove(image_path)
+                        except Exception as e:
+                            logging.warning(f"Не удалось удалить временный файл {image_path}: {e}")
                     await callback_query.answer("✅ Изображение отправлено")
                 else:
                     logging.error(f"Изображение не было создано: {image_path}")
@@ -117,14 +123,8 @@ async def process_group_week_navigation(callback_query: CallbackQuery):
 
         # Форматируем расписание
         formatted_timetable = format_timetable_dict(timetable, f"Расписание группы {group_name}", week_number=week_number)
-
-        # Проверяем длину сообщения (лимит Telegram - 4096 символов)
-        max_length = 4000  # Оставляем запас
+        formatted_timetable = sched_common.truncate_for_telegram(formatted_timetable)
         reply_markup = get_group_week_navigation_buttons(group_name, week_number)
-
-        # Если сообщение слишком длинное, обрезаем
-        if len(formatted_timetable) > max_length:
-            formatted_timetable = formatted_timetable[:max_length] + "\n\n... (сообщение обрезано, используйте навигацию по неделям)"
 
         # Редактируем сообщение
         await callback_query.message.edit_text(formatted_timetable, parse_mode="Markdown", reply_markup=reply_markup)
@@ -162,9 +162,7 @@ async def process_group_day(callback_query: CallbackQuery):
         if not day_lessons:
             text = f"📅 {title}\n\nЗанятий не найдено 🎉"
         else:
-            text = format_timetable_dict(day_lessons, title)
-            if len(text) > 4000:
-                text = text[:4000] + "\n\n... (сообщение обрезано)"
+            text = sched_common.truncate_for_telegram(format_timetable_dict(day_lessons, title))
 
         await callback_query.message.edit_text(
             text, parse_mode="Markdown",
@@ -235,7 +233,6 @@ async def cmd_group_timetable(message: types.Message, override: str = None):
 
     try:
         # Проверяем наличие кэша расписания всех групп
-        status_msg = None
         if timetable_service.all_groups_timetable_cache is None:
             if timetable_service.timetable_loading:
                 status_msg = await message.answer("⏳ Расписание уже загружается, пожалуйста подождите...")
@@ -245,11 +242,6 @@ async def cmd_group_timetable(message: types.Message, override: str = None):
             # Не удаляем сообщение, так как оно будет обновляться с прогрессом
         else:
             all_timetable = timetable_service.all_groups_timetable_cache
-            if status_msg:
-                try:
-                    await status_msg.delete()
-                except:
-                    pass
 
         api = await get_timetable_api()
 
@@ -291,41 +283,21 @@ async def cmd_group_timetable(message: types.Message, override: str = None):
             await message.answer(f"❌ Расписание для группы '{group_name}' пусто.")
             return
 
-        # Определяем текущую неделю (первая неделя с занятиями или текущая)
-        weeks = sorted(set(lesson.get('Номер недели', 0) for lesson in timetable))
-        current_week = weeks[0] if weeks else None
+        # Определяем текущую неделю: реальная текущая, если для неё есть
+        # занятия, иначе — первая неделя с занятиями (см. pick_current_week).
+        current_week = sched_common.pick_current_week(timetable)
 
         logging.info(f"Расписание группы {group_id} ({group_name}) успешно получено для пользователя {user_id}. Занятий: {len(timetable)}")
 
         # Форматируем расписание для текущей недели
         formatted_timetable = format_timetable_dict(timetable, f"Расписание группы {group_name}", week_number=current_week)
-
-        # Проверяем длину сообщения (лимит Telegram - 4096 символов)
-        max_length = 4000  # Оставляем запас для форматирования
         reply_markup = get_group_week_navigation_buttons(group_name, current_week)
 
-        # Если сообщение слишком длинное, разбиваем на части
-        if len(formatted_timetable) > max_length:
-            # Пытаемся разбить по дням
-            parts = formatted_timetable.split("----------------------")
-            if len(parts) > 1:
-                current_part = parts[0]  # Заголовок
-                for part in parts[1:]:
-                    if len(current_part + "----------------------" + part) > max_length:
-                        # Отправляем текущую часть
-                        await message.answer(current_part, parse_mode="Markdown", reply_markup=reply_markup if current_part == parts[0] else None)
-                        current_part = "----------------------" + part
-                    else:
-                        current_part += "----------------------" + part
-                # Отправляем последнюю часть
-                if current_part:
-                    await message.answer(current_part, parse_mode="Markdown")
-            else:
-                # Если не удалось разбить, просто обрезаем
-                formatted_timetable = formatted_timetable[:max_length] + "\n\n... (сообщение обрезано, используйте навигацию по неделям)"
-                await message.answer(formatted_timetable, parse_mode="Markdown", reply_markup=reply_markup)
-        else:
-            await message.answer(formatted_timetable, parse_mode="Markdown", reply_markup=reply_markup)
+        # Длинное сообщение — разбиваем по дням под лимит Telegram; клавиатура
+        # только на первой части.
+        parts = sched_common.split_for_telegram(formatted_timetable)
+        for i, part in enumerate(parts):
+            await message.answer(part, parse_mode="Markdown", reply_markup=reply_markup if i == 0 else None)
 
     except Exception as e:
         logging.error(f"Ошибка при получении расписания группы {group_input} для пользователя {user_id}: {e}", exc_info=True)

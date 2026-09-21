@@ -76,3 +76,43 @@ def test_format_age_hours():
 
 def test_format_age_unknown():
     assert timetable_cache._format_cache_age(None) == "время неизвестно"
+
+
+# --- _write_first_day_cache / _read_first_day_cache --------------------------
+
+def test_write_then_read_first_day_roundtrip(tmp_path):
+    path = tmp_path / "first_day.json"
+    timetable_cache._write_first_day_cache("2026-08-24", path)
+    assert timetable_cache._read_first_day_cache(path) == "2026-08-24"
+
+
+def test_read_first_day_missing_file_returns_none(tmp_path):
+    assert timetable_cache._read_first_day_cache(tmp_path / "nope.json") is None
+
+
+def test_read_first_day_corrupt_returns_none(tmp_path):
+    path = tmp_path / "first_day.json"
+    path.write_text("{ битый json", encoding="utf-8")
+    assert timetable_cache._read_first_day_cache(path) is None
+
+
+# --- get_first_day -------------------------------------------------------------
+
+def test_get_first_day_prefers_cache_over_env(tmp_path, monkeypatch):
+    path = tmp_path / "first_day.json"
+    timetable_cache._write_first_day_cache("2026-08-24", path)
+    monkeypatch.setattr(timetable_cache, "FIRST_DAY_CACHE_FILE", path)
+    monkeypatch.setenv("FIRST_DAY", "2099-01-01")
+    assert timetable_cache.get_first_day() == "2026-08-24"
+
+
+def test_get_first_day_falls_back_to_env_when_no_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(timetable_cache, "FIRST_DAY_CACHE_FILE", tmp_path / "nope.json")
+    monkeypatch.setenv("FIRST_DAY", "2026-08-24")
+    assert timetable_cache.get_first_day() == "2026-08-24"
+
+
+def test_get_first_day_falls_back_to_hardcoded_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(timetable_cache, "FIRST_DAY_CACHE_FILE", tmp_path / "nope.json")
+    monkeypatch.delenv("FIRST_DAY", raising=False)
+    assert timetable_cache.get_first_day() == timetable_cache.FIRST_DAY_FALLBACK

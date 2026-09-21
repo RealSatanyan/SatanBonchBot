@@ -63,6 +63,37 @@ def test_teacher_timetable_unknown_teacher_returns_empty():
     assert BonchAPI.teacher_timetable(SAMPLE_TIMETABLE, "Сидоров") == []
 
 
+def test_teacher_timetable_caches_result_for_repeated_same_query():
+    """Регрессия: полный линейный скан по всем занятиям всех групп (в проде —
+    расписание всего вуза, ~58 МБ) повторялся заново на КАЖДЫЙ клик навигации
+    по неделям для одного и того же преподавателя, блокируя event loop для
+    всех пользователей ради уже посчитанного мгновение назад результата.
+    Одинаковый timetable-объект + то же имя -> тот же объект-список, без
+    пересчёта."""
+    first = BonchAPI.teacher_timetable(SAMPLE_TIMETABLE, "Иванов")
+    second = BonchAPI.teacher_timetable(SAMPLE_TIMETABLE, "Иванов")
+    assert first is second
+
+
+def test_teacher_timetable_cache_invalidated_by_new_timetable_object():
+    """После рефреша расписания all_groups_timetable_cache — НОВЫЙ dict-объект
+    (см. timetable_service.py), а старый больше никогда не запрашивается.
+    Кэш на такой рефреш должен отдавать корректный (не устаревший) результат
+    по новому объекту, а не молча переиспользовать старый список."""
+    stale_cached = BonchAPI.teacher_timetable(SAMPLE_TIMETABLE, "Иванов")
+
+    refreshed_timetable = {**SAMPLE_TIMETABLE, "ИКВ-13": [{
+        "ФИО преподавателя": "Иванов И.И.", "Номер кабинета": "ауд. 700",
+        "Номер недели": 3, "Номер дня недели": 2, "Время занятия": "16:30-18:05",
+        "Предмет": "Новый предмет",
+    }]}
+    fresh = BonchAPI.teacher_timetable(refreshed_timetable, "Иванов")
+
+    assert fresh is not stale_cached
+    assert len(fresh) == len(stale_cached) + 1
+    assert "Новый предмет" in {l["Предмет"] for l in fresh}
+
+
 # --- classroom_timetable -----------------------------------------------------
 
 def test_classroom_timetable_filters_by_room_substring():
@@ -73,6 +104,13 @@ def test_classroom_timetable_filters_by_room_substring():
 
 def test_classroom_timetable_unknown_room_returns_empty():
     assert BonchAPI.classroom_timetable(SAMPLE_TIMETABLE, "999") == []
+
+
+def test_classroom_timetable_caches_result_for_repeated_same_query():
+    """Тот же кэш, что и у teacher_timetable, для навигации по аудитории."""
+    first = BonchAPI.classroom_timetable(SAMPLE_TIMETABLE, "401")
+    second = BonchAPI.classroom_timetable(SAMPLE_TIMETABLE, "401")
+    assert first is second
 
 
 # --- _parse_id_name_pairs (делегат в parsers) --------------------------------

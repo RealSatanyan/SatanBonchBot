@@ -85,3 +85,45 @@ def _timetable_cache_age_now() -> Optional[float]:
     """Возраст кэша расписания на текущий момент (по московскому времени)."""
     now = datetime.now(pytz.timezone("Europe/Moscow"))
     return _timetable_age_seconds(_read_timetable_meta(), now)
+
+
+# --- Автоопределение FIRST_DAY -----------------------------------------------
+# FIRST_DAY (опорная дата для вычисления календарных дат занятий в
+# parse_timetable_table) раньше жила только как ручной .env/дефолт и требовала
+# обновления раз в семестр — иначе даты в расписании тихо съезжают на прошлый
+# семестр. login_service._detect_first_day вычисляет её из личного расписания
+# ЛК (несёт неделю и её календарный диапазон) при каждом логине/переопределении
+# группы и пишет сюда; get_first_day() отдаёт её в приоритете.
+FIRST_DAY_CACHE_FILE = Path("first_day.json")
+FIRST_DAY_FALLBACK = "2026-02-03"
+
+
+def _write_first_day_cache(first_day: str, path: Optional[Path] = None) -> None:
+    """Записывает автоопределённый FIRST_DAY в sidecar-файл.
+
+    path=None читает текущее значение FIRST_DAY_CACHE_FILE из модуля (а не
+    связывает его один раз как дефолт параметра) — иначе monkeypatch модуль-
+    ного атрибута в тестах молча не сработал бы.
+    """
+    path = path or FIRST_DAY_CACHE_FILE
+    try:
+        path.write_text(json.dumps({"first_day": first_day}), encoding="utf-8")
+    except Exception:
+        logging.warning("Не удалось записать %s", path, exc_info=True)
+
+
+def _read_first_day_cache(path: Optional[Path] = None) -> Optional[str]:
+    """Читает автоопределённый FIRST_DAY. None — нет файла / битый."""
+    path = path or FIRST_DAY_CACHE_FILE
+    try:
+        return json.loads(path.read_text(encoding="utf-8")).get("first_day")
+    except Exception:
+        return None
+
+
+def get_first_day() -> str:
+    """FIRST_DAY для вычисления дат занятий: автоопределённый (из ЛК,
+    _write_first_day_cache) > ручной override FIRST_DAY из .env > захардко-
+    женный fallback (сработает только пока ни один пользователь не логинился).
+    """
+    return _read_first_day_cache() or os.getenv("FIRST_DAY") or FIRST_DAY_FALLBACK

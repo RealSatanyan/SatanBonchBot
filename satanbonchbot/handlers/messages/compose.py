@@ -9,6 +9,7 @@ _send_lk_message_from_state. Поведение хэндлеров не меня
 модуль-квалифицированно через messages_service.*.
 """
 
+import itertools
 import os
 import logging
 import tempfile
@@ -40,6 +41,13 @@ from satanbonchbot import messages_service
 from satanbonchbot.messages_service import  _invalidate_messages_cache
 
 router = Router()
+
+# Счётчик поисков /send_lk с несколькими результатами: без него
+# pending_lk_messages, ключуемый только (user_id, recipient_id), затирался
+# повторным поиском с пересекающимся получателем (обычный случай — тот же
+# человек попадает в оба списка результатов), и нажатие кнопки на первой, ещё
+# не устаревшей клавиатуре отправляло текст второго сообщения.
+_pending_lk_send_seq = itertools.count()
 
 
 @router.message(Command("send_lk"))
@@ -226,17 +234,21 @@ async def cmd_send_lk(message: types.Message, override_text: str = None):
         # Ограничим до 10 верхних результатов
         choices = results[:10]
 
+        # batch_id привязывает эти pending-записи именно к ЭТОМУ поиску —
+        # см. комментарий у _pending_lk_send_seq.
+        batch_id = next(_pending_lk_send_seq)
+
         keyboard = []
         for r in choices:
             rid = r["id"]
             label = r["label"]
             keyboard.append(
-                [InlineKeyboardButton(text=label, callback_data=f"lk_send_{rid}")]
+                [InlineKeyboardButton(text=label, callback_data=f"lk_send_{batch_id}_{rid}")]
             )
 
         # Сохраняем текст сообщения для последующей отправки после выбора
         for r in choices:
-            key = (user_id, r["id"])
+            key = (user_id, batch_id, r["id"])
             messages_service.pending_lk_messages[key] = {
                 "text": text,
                 "title": "",
@@ -264,8 +276,10 @@ async def handle_lk_send_callback(callback_query: CallbackQuery):
 
     try:
         data = callback_query.data
-        recipient_id = int(data.split("_")[-1])
-        key = (user_id, recipient_id)
+        parts = data.split("_")
+        recipient_id = int(parts[-1])
+        batch_id = int(parts[-2])
+        key = (user_id, batch_id, recipient_id)
 
         if key not in messages_service.pending_lk_messages:
             await callback_query.answer("Сохраненное сообщение не найдено, попробуйте снова через /send_lk.", show_alert=True)

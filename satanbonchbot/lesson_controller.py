@@ -155,6 +155,10 @@ class LessonController:
                             human_idx,
                             minutes_left,
                         )
+                except ValueError:
+                    # Истёкшая сессия — не глотаем как обычный сбой напоминания,
+                    # тот же аргумент, что и у gate'а автоклика ниже (см. его except).
+                    raise
                 except Exception as notify_error:
                     logging.warning(
                         "Не удалось отправить напоминание о паре для user_id=%s: %s",
@@ -180,6 +184,12 @@ class LessonController:
                     current_details = await self.api.get_current_lesson_details(
                         now_dt=now_dt, target_pair_index=current_idx
                     )
+                except ValueError:
+                    # Истёкшая сессия (ERR_MSG/login=no из get_raw_timetable) — не глотаем
+                    # молча как «пары сегодня нет» (регрессия 5f2bfba: gate дергает этот
+                    # вызов раньше click_start_lesson, и раньше именно здесь терялся сигнал
+                    # для переавторизации в start_lesson).
+                    raise
                 except Exception:
                     logging.warning(
                         "Не удалось проверить расписание перед автокликом для user_id=%s",
@@ -337,7 +347,12 @@ class LessonController:
         password = decrypt_password(password)
         # Создаем новый экземпляр API и авторизуемся
         lk_client.apis[self.user_id] = lk_client.DebuggableBonchAPI()
-        await lk_client.apis[self.user_id].login(email, password)
+        if not await lk_client.apis[self.user_id].login(email, password):
+            # Раньше bool от login() отбрасывался: неудачный релогин (сменившийся
+            # пароль, сбой ЛК) молча считался успехом, start_lesson() рапортовал
+            # "Переавторизация успешна" и цикл ловил тот же Session expired
+            # каждую минуту заново, никогда не доходя до уведомления про /login.
+            raise ValueError(f"Переавторизация не удалась для пользователя {self.user_id}")
         # Обновляем ссылку на API в контроллере
         self.api = lk_client.apis[self.user_id]
 

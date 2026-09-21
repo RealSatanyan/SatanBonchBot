@@ -112,12 +112,19 @@ def test_click_start_lesson_counts_only_status_200(monkeypatch, load_fixture):
     assert asyncio.run(scenario()) == 0
 
 
-def test_click_start_lesson_raises_on_expired_session(monkeypatch):
-    """HTML с редиректом login=no → ValueError (нужна переавторизация)."""
+def test_click_start_lesson_propagates_session_expired_from_get_raw_timetable(monkeypatch):
+    """ERR_MSG/login=no теперь детектирует и бросает сам get_raw_timetable
+    (единая точка для всех вызывающих, см. lk_client.py) — click_start_lesson
+    просто не должен глотать это исключение, а не детектировать его сам."""
     _patch_network(monkeypatch)
 
     async def scenario():
-        api = _api_with_timetable("<html>index.php?login=no</html>")
+        api = _api_with_timetable("не используется")
+
+        async def _raise_expired(*args, **kwargs):
+            raise ValueError("Session expired - redirect to login=no. Need to re-authenticate.")
+
+        api.get_raw_timetable = _raise_expired
         return await api.click_start_lesson(user_id=1)
 
     with pytest.raises(ValueError):

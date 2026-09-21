@@ -7,7 +7,17 @@ import asyncio
 
 from satanbonchbot import db
 from satanbonchbot import parsers
+from satanbonchbot import timetable_cache
 from satanbonchbot.login_service import  detect_user_group
+
+# Та же страница, что видит пользователь после логина: несёт номер недели и
+# её календарный диапазон в заголовке — источник автоопределения FIRST_DAY.
+RASPISANIE_WITH_WEEK_HTML = """
+<html><body>
+<h3> Расписание занятий на неделю № 1 (24-08-2026 / 30-08-2026) </h3>
+<table class="simple-little-table"><tbody></tbody></table>
+</body></html>
+"""
 
 
 RASPISANIE_HTML = """
@@ -80,6 +90,27 @@ def test_detect_user_group_no_group_keeps_none(temp_db):
     asyncio.run(detect_user_group(6, _FakeApi("<html>пусто</html>")))
 
     assert db.get_user_group(6) is None
+
+
+def test_detect_user_group_also_detects_first_day(temp_db, tmp_path, monkeypatch):
+    monkeypatch.setattr(timetable_cache, "FIRST_DAY_CACHE_FILE", tmp_path / "first_day.json")
+    temp_db.execute("INSERT INTO users (user_id, email, password) VALUES (8, 'e', 'p')")
+    temp_db.commit()
+
+    asyncio.run(detect_user_group(8, _FakeApi(RASPISANIE_WITH_WEEK_HTML)))
+
+    assert timetable_cache.get_first_day() == "2026-08-17"
+
+
+def test_detect_user_group_no_week_header_leaves_first_day_cache_untouched(temp_db, tmp_path, monkeypatch):
+    cache_path = tmp_path / "first_day.json"
+    monkeypatch.setattr(timetable_cache, "FIRST_DAY_CACHE_FILE", cache_path)
+    temp_db.execute("INSERT INTO users (user_id, email, password) VALUES (9, 'e', 'p')")
+    temp_db.commit()
+
+    asyncio.run(detect_user_group(9, _FakeApi(RASPISANIE_HTML)))
+
+    assert not cache_path.exists()
 
 
 def test_detect_user_group_swallows_errors(temp_db):

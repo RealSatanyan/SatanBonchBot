@@ -121,25 +121,58 @@ class BonchAPI:
         try: return datetime.strptime(start_time_str, '%H:%M').time()
         except ValueError: return time(0, 0)
 
+    # Кэш результатов фильтрации по (kind, значение) -> результат, для ОДНОГО
+    # поколения timetable-объекта (_filter_cache_timetable). Без него полный
+    # линейный скан по всем занятиям всех групп (в проде — расписание всего
+    # вуза, ~58 МБ) повторялся заново на КАЖДЫЙ клик навигации по неделям для
+    # одного и того же преподавателя/аудитории, блокируя event loop для всех
+    # пользователей ради уже готового результата.
+    #
+    # Инвалидация — по identity timetable-объекта, ВЕСЬ кэш целиком: рефреш
+    # расписания создаёт новый dict (timetable_service.py), а не мутирует
+    # старый. Точечная инвалидация только по изменившемуся ключу держала бы
+    # в памяти старые timetable-объекты годами работы бота (по одному на
+    # каждое когда-либо запрошенное имя преподавателя/аудитории) — реальная
+    # утечка на ~58 МБ за штуку, а не просто "лишние" данные.
+    _filter_cache: dict = {}
+    _filter_cache_timetable = None
+
+    @classmethod
+    def _filtered_lessons(cls, kind: str, timetable: dict, value: str, match) -> list:
+        if cls._filter_cache_timetable is not timetable:
+            cls._filter_cache = {}
+            cls._filter_cache_timetable = timetable
+
+        cache_key = (kind, value)
+        if cache_key in cls._filter_cache:
+            return cls._filter_cache[cache_key]
+
+        lessons = [
+            lesson
+            for group_lessons in timetable.values()
+            for lesson in group_lessons
+            if match(lesson)
+        ]
+        result = sorted(
+            lessons,
+            key=lambda x: (x['Номер недели'], x['Номер дня недели'], BonchAPI.parse_lesson_time(x['Время занятия'])),
+        )
+        cls._filter_cache[cache_key] = result
+        return result
+
     @staticmethod
     def teacher_timetable(timetable: dict, teacher: str) -> list:
-        teacher_lessons = []
-        for _, lessons in timetable.items():
-            for lesson in lessons:
-                if lesson['ФИО преподавателя'] and teacher in lesson['ФИО преподавателя']:
-                    teacher_lessons.append(lesson)
-
-        return sorted(teacher_lessons, key=lambda x: (x['Номер недели'], x['Номер дня недели'], BonchAPI.parse_lesson_time(x['Время занятия'])))
+        return BonchAPI._filtered_lessons(
+            'teacher', timetable, teacher,
+            lambda lesson: lesson['ФИО преподавателя'] and teacher in lesson['ФИО преподавателя'],
+        )
 
     @staticmethod
     def classroom_timetable(timetable: dict, classroom: str) -> list:
-        classroom_lessons = []
-        for _, lessons in timetable.items():
-            for lesson in lessons:
-                if lesson['Номер кабинета'] and classroom in lesson['Номер кабинета']:
-                    classroom_lessons.append(lesson)
-
-        return sorted(classroom_lessons, key=lambda x: (x['Номер недели'], x['Номер дня недели'], BonchAPI.parse_lesson_time(x['Время занятия'])))
+        return BonchAPI._filtered_lessons(
+            'classroom', timetable, classroom,
+            lambda lesson: lesson['Номер кабинета'] and classroom in lesson['Номер кабинета'],
+        )
 
     @staticmethod
     def format_output(timetable: list, week_number: int = None) -> str:

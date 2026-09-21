@@ -69,6 +69,25 @@ def test_format_timetable_dict_falls_back_to_short_name():
     assert "корпус" not in result
 
 
+def test_format_timetable_dict_escapes_markdown_special_chars():
+    """Регрессия: '_'/'*'/'`'/'[' в скрейпленном предмете/преподавателе/
+    аудитории роняли ВСЁ сообщение (parse_mode='Markdown', 'can't parse
+    entities') вместо показа одного, но валидного, расписания группы/
+    аудитории/преподавателя."""
+    lesson = {
+        **LESSON,
+        "Предмет": "Мат_анализ",
+        "ФИО преподавателя": "Иванов_И.И.",
+        "Номер кабинета": "[401]",
+    }
+    result = formatting.format_timetable_dict([lesson])
+    assert "Мат\\_анализ" in result
+    assert "Иванов\\_И.И." in result
+    # Экранируем именно '[' (спецсимвол legacy Markdown, начало ссылки);
+    # закрывающая ']' сама по себе entity не запускает и экранирования не требует.
+    assert "\\[401]" in result
+
+
 # --- get_week_navigation_buttons ---------------------------------------------
 
 def test_week_navigation_buttons_offsets():
@@ -95,3 +114,29 @@ def test_teacher_navigation_buttons_default_week():
     callbacks = _callbacks(keyboards.get_teacher_week_navigation_buttons("Петров"))
     assert any(cb.endswith("_-1") for cb in callbacks)
     assert any(cb.endswith("_1") for cb in callbacks)
+
+
+def test_teacher_navigation_buttons_long_name_stays_within_callback_limit():
+    """Точный поиск по полному ФИО (чтобы отсеять однофамильцев) — обычный
+    сценарий в вузе. base64 полного ФИО + префикс кнопки + номер недели мог
+    превысить лимит Telegram в 64 байта на callback_data, и вся клавиатура
+    (а с ней и всё сообщение с уже готовым расписанием) падала с
+    BUTTON_DATA_INVALID."""
+    kb = keyboards.get_teacher_week_navigation_buttons("Иванов Иван Иванович", week_number=3)
+    callbacks = _callbacks(kb)
+    assert callbacks
+    assert all(len(cb.encode("utf-8")) <= 64 for cb in callbacks)
+
+
+def test_classroom_navigation_buttons_long_name_stays_within_callback_limit():
+    kb = keyboards.get_classroom_week_navigation_buttons("Лабораторный корпус, ауд. 401-Б", week_number=3)
+    callbacks = _callbacks(kb)
+    assert callbacks
+    assert all(len(cb.encode("utf-8")) <= 64 for cb in callbacks)
+
+
+def test_group_navigation_buttons_long_name_stays_within_callback_limit():
+    kb = keyboards.get_group_week_navigation_buttons("Очень-длинное-название-группы-ИКВ-11-доп", week_number=3)
+    callbacks = _callbacks(kb)
+    assert callbacks
+    assert all(len(cb.encode("utf-8")) <= 64 for cb in callbacks)

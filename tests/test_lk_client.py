@@ -62,7 +62,7 @@ class _FakeLoginSession:
         return _FakeResponse(type(self).get_status, "<html>cabinet</html>")
 
     def post(self, url, **kwargs):
-        self.posts.append(url)
+        self.posts.append((url, kwargs))
         return _FakeResponse(type(self).post_status, type(self).auth_text)
 
 
@@ -100,6 +100,27 @@ def test_login_fails_on_wrong_credentials(monkeypatch):
     assert _run_login(cls, monkeypatch) is False
 
 
+def test_login_fails_on_wrong_credentials_leaves_cookies_falsy(monkeypatch):
+    """Анонимные GET на CABINET/CABINET?login=no уже кладут PHPSESSION в
+    cookie_jar ДО отправки кредов. Если после этого _refresh_cookies_view()
+    вызывается и на неуспешном пути логина, api.cookies становится truthy,
+    хотя авторизация провалилась — вызывающий код, который смотрит на
+    cookies вместо bool от login() (lk_messages.get_message_api), решит,
+    что сессия рабочая."""
+    cls = type("_RejectSession", (_FakeLoginSession,), {"auth_text": "0"})
+    _patch_session(monkeypatch, cls)
+
+    async def scenario():
+        api = lk_client.DebuggableBonchAPI()
+        ok = await api.login("user@sut.ru", "wrong-password")
+        return ok, api.cookies
+
+    ok, cookies = asyncio.run(scenario())
+
+    assert ok is False
+    assert not cookies
+
+
 def test_login_fails_on_forbidden(monkeypatch):
     cls = type("_ForbiddenSession", (_FakeLoginSession,), {"get_status": 403})
     assert _run_login(cls, monkeypatch) is False
@@ -115,13 +136,16 @@ def test_login_fails_on_network_error(monkeypatch):
     assert _run_login(_BrokenSession, monkeypatch) is False
 
 
-# --- login: percent-кодирование учётных данных (A.2) -------------------------
+# --- login: креды идут в теле POST, не в query-строке ------------------------
 
-def test_login_percent_encodes_credentials_in_auth_url(monkeypatch):
-    """Email и пароль со спецсимволами percent-кодируются в AUTH-URL (A.2).
+def test_login_sends_credentials_in_post_body(monkeypatch):
+    """AUTH — POST с телом {users, parole}, как реальный jQuery $.post со
+    страницы логина (js_new/ajax.js: putLoginTo), а не query-строка.
 
-    Сырой `&`/`#`/пробел в query-строке исказил бы значение — портал получил
-    бы обрезанный пароль и вернул бы необъяснимое «неверный логин/пароль».
+    POST с кредами в URL и пустым телом отличим от AJAX-запроса браузера и
+    ловит 403 от WAF lk.sut.ru — даже с валидными данными и рабочим прокси.
+    Заодно спецсимволы (`&`/`#`/пробел) не бьются вручную quote() в URL —
+    aiohttp сам корректно кодирует form-тело.
     """
     captured = []
 
@@ -138,10 +162,11 @@ def test_login_percent_encodes_credentials_in_auth_url(monkeypatch):
 
     asyncio.run(scenario())
 
-    auth_url = next(u for s in captured for u in s.posts)
-    assert "p&ss#1" not in auth_url
-    assert "parole=p%26ss%231%20x" in auth_url
-    assert "users=user%2Ba%40sut.ru" in auth_url
+    auth_url, auth_kwargs = next(entry for s in captured for entry in s.posts)
+    assert "users=" not in auth_url
+    assert "parole=" not in auth_url
+    assert auth_kwargs["data"] == {"users": "user+a@sut.ru", "parole": "p&ss#1 x"}
+    assert auth_kwargs["headers"]["X-Requested-With"] == "XMLHttpRequest"
 
 
 # --- get_raw_timetable: переавторизация --------------------------------------
@@ -156,15 +181,104 @@ class _ExpiredSessionStub(_FakeLoginSession):
         return _FakeResponse(200, type(self).ERR)
 
 
-def test_get_raw_timetable_returns_err_msg_on_expired_session(monkeypatch):
-    """get_raw_timetable отдаёт ERR_MSG как есть — переавторизацию решает вызывающий."""
+class _LoginNoRedirectStub(_FakeLoginSession):
+    """ClientSession, чей GET всегда отдаёт редирект на login=no."""
+
+    def get(self, url, **kwargs):
+        self.gets.append(url)
+        return _FakeResponse(200, "<html>index.php?login=no</html>")
+
+
+def test_get_raw_timetable_raises_on_expired_session(monkeypatch):
+    """get_raw_timetable сам бросает ValueError на ERR_MSG — единая точка
+    обнаружения истёкшей сессии для ВСЕХ вызывающих (get_timetable,
+    get_current_lesson_details, click_start_lesson...), а не только для
+    click_start_lesson, который раньше проверял это отдельно."""
     _patch_session(monkeypatch, _ExpiredSessionStub)
 
     async def scenario():
         api = lk_client.DebuggableBonchAPI()
         return await api.get_raw_timetable()
 
-    assert asyncio.run(scenario()).strip() == _ExpiredSessionStub.ERR
+    with pytest.raises(ValueError, match="Session expired"):
+        asyncio.run(scenario())
+
+
+def test_get_raw_timetable_raises_on_login_no_redirect(monkeypatch):
+    """Второй сигнал истёкшей сессии (помимо ERR_MSG) — редирект на login=no.
+    Раньше это проверял только click_start_lesson; get_current_lesson_details/
+    get_upcoming_start_lesson_details не находили <table> в этом HTML и тихо
+    отдавали None — неотличимо от «пары сегодня нет», переавторизация никогда
+    не запускалась."""
+    _patch_session(monkeypatch, _LoginNoRedirectStub)
+
+    async def scenario():
+        api = lk_client.DebuggableBonchAPI()
+        return await api.get_raw_timetable()
+
+    with pytest.raises(ValueError, match="login=no"):
+        asyncio.run(scenario())
+
+
+# --- get_timetable(week_offset=...): следующая/предыдущая неделя ------------
+
+def test_get_timetable_with_offset_uses_current_plus_offset_not_first_week(monkeypatch):
+    """Регресс: базовый BonchAPI.get_timetable считает
+    desired_week = current_week + week_offset + self._first_week. С реальными
+    данными (current_week=1, _first_week=23) это уводило «следующую неделю»
+    на week=25 — несуществующую неделю почти на год вперёд, вместо
+    настоящей next-недели week=2 (проверено вручную на живом расписании:
+    week=2 у сайта — это буквально текст «Следующая» на странице week=1).
+    Наше переопределение считает просто current_week + week_offset, как и
+    сам сайт в своей пагинации.
+    """
+    requested_weeks = []
+
+    async def fake_get_raw_timetable(self, week_number=False):
+        requested_weeks.append(week_number)
+        return f"html-for-week-{week_number}"
+
+    async def fake_get_week(html):
+        return 1  # «текущая неделя» с week_number=False парсится как 1
+
+    async def fake_get_my_lessons(html):
+        return [html]
+
+    monkeypatch.setattr(lk_client.DebuggableBonchAPI, "get_raw_timetable", fake_get_raw_timetable)
+    monkeypatch.setattr(lk_client.parser, "get_week", fake_get_week)
+    monkeypatch.setattr(lk_client.parser, "get_my_lessons", fake_get_my_lessons)
+
+    async def scenario():
+        api = lk_client.DebuggableBonchAPI()
+        # Если бы _first_week использовался в формуле (как в базовом классе),
+        # результат увело бы на week=1+1+23=25 вместо правильного week=2.
+        api._first_week = 23
+        return await api.get_timetable(week_offset=1)
+
+    result = asyncio.run(scenario())
+
+    assert requested_weeks == [False, 2]
+    assert result == ["html-for-week-2"]
+
+
+def test_get_timetable_without_offset_uses_get_my_lessons_directly(monkeypatch):
+    """week_offset=0/False — как и раньше, без пересчёта недели."""
+    async def fake_get_raw_timetable(self, week_number=False):
+        return f"html-for-week-{week_number}"
+
+    async def fake_get_my_lessons(html):
+        return [html]
+
+    monkeypatch.setattr(lk_client.DebuggableBonchAPI, "get_raw_timetable", fake_get_raw_timetable)
+    monkeypatch.setattr(lk_client.parser, "get_my_lessons", fake_get_my_lessons)
+
+    async def scenario():
+        api = lk_client.DebuggableBonchAPI()
+        return await api.get_timetable(week_offset=0)
+
+    result = asyncio.run(scenario())
+
+    assert result == ["html-for-week-False"]
 
 
 def test_click_start_lesson_raises_when_session_expired(monkeypatch):

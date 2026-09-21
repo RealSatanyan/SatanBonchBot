@@ -11,7 +11,7 @@ services:
     # «Бот жив»: heartbeat_loop в main.py обновляет /tmp/satanbot_heartbeat,
     # healthcheck.py проверяет его свежесть. interval×retries даёт ~3 мин до unhealthy.
     healthcheck:
-      test: ["CMD", "python", "-u", "healthcheck.py"]
+      test: ["CMD", "python", "-u", "satanbonchbot/healthcheck.py"]
       interval: 60s
       timeout: 10s
       retries: 3

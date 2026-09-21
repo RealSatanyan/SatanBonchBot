@@ -67,8 +67,7 @@ async def get_message_api(user_id: int) -> Optional[DebuggableBonchAPI]:
         if not result:
             return None
         email, password = result
-        await existing_api.login(email, decrypt_password(password))
-        if not hasattr(existing_api, 'cookies') or not existing_api.cookies:
+        if not await existing_api.login(email, decrypt_password(password)):
             return None
 
     return existing_api

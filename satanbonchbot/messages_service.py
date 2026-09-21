@@ -21,6 +21,7 @@
 Модуль НЕ импортирует main на уровне модуля — цикла зависимостей нет.
 """
 import asyncio
+import html
 import logging
 import time as time_module
 
@@ -125,12 +126,14 @@ async def show_message_list(user_id: int, chat_id: int, index: int):
     count_display = format_message_count(
         len(messages), state.get('total_pages', 1), state.get('per_page', 0), has_more_pages
     )
-    text = f"{unread_marker} *Сообщение {index + 1} из {count_display}*\n\n"
-    text += f"📅 *Дата:* {date}\n"
-    text += f"👤 *Отправитель:* {sender}\n"
-    text += f"📋 *Тема:* {title}\n"
+    # parse_mode='HTML' (см. inbox.py): Markdown-режим ронял Telegram-парсер на
+    # несбалансированных `*`/`_`/`[` в темах и ФИО отправителей из ЛК.
+    text = f"{unread_marker} <b>Сообщение {index + 1} из {html.escape(count_display)}</b>\n\n"
+    text += f"📅 <b>Дата:</b> {html.escape(date)}\n"
+    text += f"👤 <b>Отправитель:</b> {html.escape(sender)}\n"
+    text += f"📋 <b>Тема:</b> {html.escape(title)}\n"
     if files_marker:
-        text += f"{files_marker} *Есть файлы*\n"
+        text += f"{files_marker} <b>Есть файлы</b>\n"
 
     # Создаем клавиатуру для навигации
     keyboard = []
@@ -150,7 +153,7 @@ async def show_message_list(user_id: int, chat_id: int, index: int):
     reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
     try:
-        await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=reply_markup)
+        await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=reply_markup)
     except Exception as e:
         logging.error(f"Ошибка при отправке списка сообщений: {e}")
 

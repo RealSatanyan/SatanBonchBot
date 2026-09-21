@@ -135,6 +135,32 @@ def test_show_message_list_renders_message(monkeypatch, reset_message_states):
     assert "Сессия" in sent['text']
 
 
+def test_show_message_list_escapes_html_specials_in_sender_and_title(monkeypatch, reset_message_states):
+    """Заголовок/отправитель с спецсимволами не должны ломать парсер Telegram.
+
+    Telegram возвращал 400 «can't parse entities» при неэкранированных
+    `*`/`_`/`[` в Markdown-режиме (issue inbox.py:190). Рендер должен
+    использовать HTML и экранировать <,>,& в динамических полях.
+    """
+    fake_bot = _FakeBot()
+    monkeypatch.setattr(messages_service, "bot", fake_bot)
+    reset_message_states[1] = {
+        'messages': [_msg("1", title="Тема <с> & *spec*", sender="Иванов <admin>")],
+        'total_pages': 1,
+        'per_page': 1,
+    }
+
+    asyncio.run(show_message_list(user_id=1, chat_id=42, index=0))
+
+    sent = fake_bot.sent[0]
+    assert sent.get('parse_mode') == 'HTML'
+    # < > & должны быть экранированы; * и _ безопасны в HTML-режиме.
+    assert "&lt;с&gt;" in sent['text']
+    assert "&lt;admin&gt;" in sent['text']
+    assert "&amp;" in sent['text']
+    assert "*spec*" in sent['text']  # звёздочки остаются как литералы
+
+
 def test_show_message_list_first_message_has_no_back_button(monkeypatch, reset_message_states):
     fake_bot = _FakeBot()
     monkeypatch.setattr(messages_service, "bot", fake_bot)

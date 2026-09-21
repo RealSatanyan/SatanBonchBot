@@ -1,6 +1,8 @@
 """Тесты безопасности: шифрование паролей, разбор /login, rate-limit входа."""
+import importlib
 import time as _time
 
+import pytest
 from cryptography.fernet import Fernet
 
 from satanbonchbot import login_service
@@ -44,6 +46,38 @@ def test_real_encryption_key_is_valid():
     # Регрессия: ENCRYPTION_KEY из .env должен быть валидным Fernet-ключом
     # (иначе шифрование молча отключается, пароли лежат в открытом виде).
     assert security._fernet is not None, "ENCRYPTION_KEY невалиден — шифрование отключено"
+
+
+# --- запуск без ENCRYPTION_KEY: явное согласие, а не тихая деградация -------
+
+def test_missing_encryption_key_raises_without_explicit_opt_in(monkeypatch):
+    """Раньше бот молча продолжал работать и хранил пароли от ЛК в users.db
+    открытым текстом, если ENCRYPTION_KEY отсутствует/невалиден — единственным
+    сигналом об этом была строка в логах, которую никто не читает
+    целенаправленно. Теперь это требует явного согласия оператора."""
+    monkeypatch.delenv("ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("ALLOW_PLAINTEXT_PASSWORDS", raising=False)
+    try:
+        with pytest.raises(RuntimeError):
+            importlib.reload(security)
+    finally:
+        # Возвращаем реальный ENCRYPTION_KEY (monkeypatch отменяется только в
+        # конце теста) — иначе восстанавливающий reload сам упадёт с тем же RuntimeError.
+        monkeypatch.undo()
+        importlib.reload(security)
+
+
+def test_missing_encryption_key_allowed_with_explicit_opt_in(monkeypatch):
+    """ALLOW_PLAINTEXT_PASSWORDS=1 — осознанный выбор (например, для локальной
+    разработки без ключа) — не должен требовать ENCRYPTION_KEY."""
+    monkeypatch.delenv("ENCRYPTION_KEY", raising=False)
+    monkeypatch.setenv("ALLOW_PLAINTEXT_PASSWORDS", "1")
+    try:
+        importlib.reload(security)
+        assert security._fernet is None
+    finally:
+        monkeypatch.undo()
+        importlib.reload(security)
 
 
 # --- parse_login_credentials -------------------------------------------------

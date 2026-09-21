@@ -11,12 +11,14 @@ users.db.bak*
 # --- Генерируемые в рантайме артефакты ---
 # timetable.json         — кэш расписания всех групп
 # timetable.meta.json    — метка времени загрузки кэша (TTL)
+# first_day.json         — автоопределённый FIRST_DAY (см. timetable_cache.get_first_day)
 # timetable*.png         — отрисованные картинки расписания
 #                          (personal: timetable_personal_<hash>.png;
 #                           group:    timetable_<group>_week_<N>_<hash>.png)
 # debug_dumps/           — HTML-дампы страниц ЛК для отладки парсеров
 timetable.json
 timetable.meta.json
+first_day.json
 timetable*.png
 debug_dumps/
 

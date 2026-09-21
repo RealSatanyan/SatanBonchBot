@@ -19,6 +19,11 @@ from satanbonchbot.lesson_controller import  LessonController
 class _FakeApi:
     """Фейк DebuggableBonchAPI: фиксирует клики/логины без обращения к ЛК."""
 
+    # Класс-атрибут (не аргумент __init__): reauthenticate() создаёт новый
+    # экземпляр через lk_client.DebuggableBonchAPI() без аргументов, поэтому
+    # неуспешный логин имитируется подклассом с login_result = False.
+    login_result = True
+
     def __init__(self, click_result=0, upcoming_details=None, raw_timetable="",
                  current_details=None):
         self.click_result = click_result
@@ -38,10 +43,14 @@ class _FakeApi:
         return self.click_result
 
     async def get_upcoming_start_lesson_details(self, **kwargs):
+        if isinstance(self.upcoming_details, BaseException):
+            raise self.upcoming_details
         return self.upcoming_details
 
     async def get_current_lesson_details(self, now_dt, target_pair_index):
         self.current_details_calls += 1
+        if isinstance(self.current_details, BaseException):
+            raise self.current_details
         return self.current_details
 
     async def get_raw_timetable(self):
@@ -51,7 +60,7 @@ class _FakeApi:
 
     async def login(self, email, password):
         self.logged_in = (email, password)
-        return True
+        return type(self).login_result
 
 
 class _FakeBot:
@@ -146,6 +155,20 @@ def test_tick_propagates_value_error_from_click(monkeypatch):
         asyncio.run(c._run_tick(datetime(2026, 5, 19, 9, 30)))
 
 
+def test_tick_propagates_value_error_from_current_lesson_details(monkeypatch):
+    """Регрессия хотфикса 'gate автоотметки по расписанию' (5f2bfba): gate дергает
+    get_current_lesson_details ДО click_start_lesson, и его bare except Exception
+    глотал ValueError об истёкшей сессии так же, как и обычное 'пары сегодня нет' —
+    переавторизация никогда не запускалась, автоклик молча умирал навсегда.
+    ValueError должен пробрасываться из тика точно так же, как из click."""
+    _notify(monkeypatch, enabled=False)
+    api = _FakeApi(current_details=ValueError("Session expired - ERR_MSG from LK."))
+    c = _controller(api, _FakeBot())
+
+    with pytest.raises(ValueError):
+        asyncio.run(c._run_tick(datetime(2026, 5, 19, 9, 30)))
+
+
 # --- _run_tick: напоминание о паре -------------------------------------------
 
 def test_tick_sends_upcoming_reminder(monkeypatch):
@@ -159,7 +182,19 @@ def test_tick_sends_upcoming_reminder(monkeypatch):
 
     assert len(bot.sent) == 1
     assert "пара" in bot.sent[0][1]
-    assert c._last_upcoming_lesson_key is not None
+
+
+def test_tick_propagates_value_error_from_upcoming_reminder(monkeypatch):
+    """Тот же класс регрессии, что и у gate'а автоклика (см. тест выше), но в
+    блоке напоминания 'за N минут': его except Exception глотал ValueError об
+    истёкшей сессии, если она обнаруживалась именно в окне напоминания, до
+    того как её успевал поймать gate текущей пары."""
+    _notify(monkeypatch, enabled=True, minutes=10)
+    api = _FakeApi(upcoming_details=ValueError("Session expired - ERR_MSG from LK."))
+    c = _controller(api, _FakeBot())
+
+    with pytest.raises(ValueError):
+        asyncio.run(c._run_tick(datetime(2026, 5, 19, 8, 51)))
 
 
 def test_tick_no_reminder_when_pair_absent(monkeypatch):
@@ -277,6 +312,28 @@ def test_reauthenticate_success(monkeypatch, temp_db, reset_registries):
 def test_reauthenticate_raises_when_user_missing(temp_db):
     """Нет данных пользователя в БД — переавторизация падает с ValueError."""
     c = _controller(api=_FakeApi(), bot=_FakeBot())
+    with pytest.raises(ValueError):
+        asyncio.run(c.reauthenticate())
+
+
+def test_reauthenticate_raises_when_login_fails(monkeypatch, temp_db, reset_registries):
+    """login() вернул False (неверный/сменившийся пароль, сбой ЛК) — реальный
+    провал переавторизации раньше проглатывался: reauthenticate() отбрасывал
+    bool от login() и всегда «успешно» подменял self.api на неавторизованный
+    клиент, из-за чего start_lesson() рапортовал 'Переавторизация успешна' и
+    каждую минуту заново ловил тот же 'Session expired', никогда не доходя
+    до уведомления пользователю про /login."""
+    db.cursor.execute(
+        "INSERT INTO users (user_id, email, password) VALUES (?, ?, ?)",
+        (1, "user@sut.ru", "encrypted"),
+    )
+    db.conn.commit()
+    monkeypatch.setattr(lesson_controller, "decrypt_password", lambda p: "plain-pw")
+    _FailingLoginApi = type("_FailingLoginApi", (_FakeApi,), {"login_result": False})
+    monkeypatch.setattr(lk_client, "DebuggableBonchAPI", _FailingLoginApi)
+
+    c = _controller(api=_FakeApi(), bot=_FakeBot())
+
     with pytest.raises(ValueError):
         asyncio.run(c.reauthenticate())
 

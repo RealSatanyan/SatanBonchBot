@@ -72,6 +72,21 @@ def test_personal_no_match_on_different_weekday():
 def test_personal_falls_back_to_short_name_without_group():
     text = format_timetable([_personal()])
     assert "Иванов И.И." in text
+
+
+# --- экранирование Markdown-спецсимволов в скрейпленных полях ----------------
+
+def test_personal_escapes_markdown_special_chars():
+    """Регрессия: '_'/'*'/'`'/'[' в скрейпленном предмете/преподавателе/
+    аудитории роняли ВСЁ сообщение (parse_mode='Markdown', 'can't parse
+    entities') вместо показа одного, но валидного, расписания."""
+    text = format_timetable([_personal(
+        subject="Мат_анализ", teacher="Иванов_И.И.", location="[214]; Б22/1",
+    )])
+    assert "Мат\\_анализ" in text
+    assert "Иванов\\_И.И." in text
+    # '[' экранируется (спецсимвол legacy Markdown); ']' сама по себе — нет.
+    assert "\\[214]" in text
     assert "Иванович" not in text
 
 

@@ -22,16 +22,27 @@ from cryptography.fernet import Fernet, InvalidToken
 # Ключ ENCRYPTION_KEY лежит в .env. Потеря ключа = пароли не восстановить
 # (пользователям придётся войти заново). Храни копию ключа отдельно и надёжно.
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
+_ALLOW_PLAINTEXT_PASSWORDS = os.getenv("ALLOW_PLAINTEXT_PASSWORDS", "0").strip().lower() in ("1", "true", "yes", "on")
 try:
     _fernet = Fernet(ENCRYPTION_KEY.encode()) if ENCRYPTION_KEY else None
 except (ValueError, TypeError):
     logging.error("ENCRYPTION_KEY задан, но невалиден — шифрование паролей ОТКЛЮЧЕНО!")
     _fernet = None
 if _fernet is None:
+    if not _ALLOW_PLAINTEXT_PASSWORDS:
+        # Раньше бот молча продолжал работать без ключа — пароли от ЛК уходили
+        # в users.db открытым текстом, единственным сигналом была строка в
+        # логах. Требуем осознанного согласия вместо тихой деградации.
+        raise RuntimeError(
+            "ENCRYPTION_KEY не задан или невалиден — пароли от ЛК будут храниться в users.db "
+            "открытым текстом. Сгенерируйте ключ: "
+            "python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\" "
+            "и укажите его в .env, либо установите ALLOW_PLAINTEXT_PASSWORDS=1, если это осознанный "
+            "выбор (например, для локальной разработки)."
+        )
     logging.warning(
-        "ENCRYPTION_KEY не задан в .env — пароли в users.db хранятся БЕЗ шифрования. "
-        "Сгенерируйте ключ: "
-        "python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+        "ENCRYPTION_KEY не задан в .env — пароли в users.db хранятся БЕЗ шифрования "
+        "(ALLOW_PLAINTEXT_PASSWORDS=1 — осознанное согласие)."
     )
 
 

@@ -4,7 +4,7 @@
 парсер ломается молча. Эти тесты фиксируют ожидаемое поведение: если разбор
 сломается, тест упадёт явно, а не вернёт «0 групп без ошибки».
 """
-from datetime import datetime
+from datetime import date, datetime
 
 from satanbonchbot import parsers
 
@@ -52,6 +52,35 @@ def test_parse_week_number_fallback_to_page_text():
     # Нет h3/h2, но в тексте страницы есть "Неделя №7".
     html = "<html><body><div>Расписание. Неделя №7. Дальше...</div></body></html>"
     assert parsers.parse_week_number(html) == 7
+
+
+# --- parse_week_start_date ---------------------------------------------------
+
+def test_parse_week_start_date_from_h3_header(load_fixture):
+    # Фикстура: "...неделя № 15 (18-05-2026 / 24-05-2026)" — 18-05-2026 понедельник.
+    html = load_fixture("raspisanie_with_lessons.html")
+    assert parsers.parse_week_start_date(html) == date(2026, 5, 18)
+
+
+def test_parse_week_start_date_missing_header_returns_none():
+    assert parsers.parse_week_start_date("<html><body><p>нет диапазона</p></body></html>") is None
+
+
+def test_parse_week_start_date_empty_html_returns_none():
+    assert parsers.parse_week_start_date("") is None
+    assert parsers.parse_week_start_date(None) is None
+
+
+# --- compute_first_day -------------------------------------------------------
+
+def test_compute_first_day_from_week_and_monday():
+    # Неделя №15, понедельник 18-05-2026 → FIRST_DAY на 15 недель раньше.
+    assert parsers.compute_first_day(15, date(2026, 5, 18)) == date(2026, 2, 2)
+
+
+def test_compute_first_day_week_one():
+    # Неделя №1: FIRST_DAY на неделю раньше реального понедельника недели 1.
+    assert parsers.compute_first_day(1, date(2026, 8, 31)) == date(2026, 8, 24)
 
 
 # --- parse_week_param --------------------------------------------------------

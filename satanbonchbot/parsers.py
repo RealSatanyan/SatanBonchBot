@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import re
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from bs4 import BeautifulSoup
 
@@ -106,6 +106,43 @@ def parse_week_number(html: str) -> int:
     except Exception as e:
         logging.error("Ошибка при разборе номера недели: %s", e, exc_info=True)
         return 0
+
+
+def parse_week_start_date(html: str) -> date | None:
+    """
+    Извлекает дату понедельника недели из заголовка личного расписания ЛК:
+    «...неделя № 15 (18-05-2026 / 24-05-2026)» → date(2026, 5, 18).
+
+    Используется для автоопределения FIRST_DAY (см. login_service.
+    _detect_first_day) — без этого дата начала семестра для вычисления
+    календарных дат занятий (parse_timetable_table) требовала ручного
+    обновления в .env раз в семестр.
+    """
+    if not html:
+        return None
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        header = soup.find(["h3", "h2"])
+        if not header:
+            return None
+        m = re.search(r"(\d{2})-(\d{2})-(\d{4})\s*/\s*\d{2}-\d{2}-\d{4}", header.get_text(" ", strip=True))
+        if not m:
+            return None
+        day, month, year = m.groups()
+        return date(int(year), int(month), int(day))
+    except Exception:
+        logging.warning("Не удалось извлечь дату начала недели из расписания", exc_info=True)
+        return None
+
+
+def compute_first_day(week_number: int, week_monday: date) -> date:
+    """
+    Обратное вычисление FIRST_DAY: понедельник недели №week_number имеет
+    дату week_monday, а parse_timetable_table считает дату занятия как
+    first_day + week_number*7 + день_недели дней. Для дня=0 (понедельник)
+    это даёт week_monday = first_day + week_number недель — отсюда first_day.
+    """
+    return week_monday - timedelta(weeks=week_number)
 
 
 def parse_week_param(html: str) -> int:

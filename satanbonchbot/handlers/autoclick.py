@@ -22,6 +22,23 @@ from satanbonchbot.login_service import  auto_login_user
 router = Router()
 
 
+async def _ensure_controller(message: types.Message, user_id: int):
+    """Контроллер автоотметки пользователя; при отсутствии пытается
+    восстановить авторизацию через auto_login_user. При неудаче сама
+    отправляет сообщение с просьбой /login и возвращает None — вызывающий
+    должен return в этом случае.
+
+    Общий код cmd_start_lesson/cmd_stop_lesson/cmd_status: раньше был
+    продублирован в каждом по отдельности и мог незаметно разойтись при
+    правке одного из трёх мест."""
+    if user_id not in lesson_controller.controllers:
+        success = await auto_login_user(user_id)
+        if not success or user_id not in lesson_controller.controllers:
+            await message.answer("Сначала авторизуйтесь с помощью /login. Если вы уже авторизованы, попробуйте выполнить /login еще раз.")
+            return None
+    return lesson_controller.controllers[user_id]
+
+
 async def send_autoclick_panel(user_id: int, chat_id: int):
     """Показывает панель автоотметки со статусом и кнопками."""
     if user_id not in lesson_controller.controllers:
@@ -45,14 +62,9 @@ async def send_autoclick_panel(user_id: int, chat_id: int):
 @router.message(Command("start_lesson"))
 async def cmd_start_lesson(message: types.Message):
     user_id = message.from_user.id
-    if user_id not in lesson_controller.controllers:
-        # Пытаемся автоматически авторизовать пользователя, если он есть в БД
-        success = await auto_login_user(user_id)
-        if not success or user_id not in lesson_controller.controllers:
-            await message.answer("Сначала авторизуйтесь с помощью /login. Если вы уже авторизованы, попробуйте выполнить /login еще раз.")
-            return
-
-    controller = lesson_controller.controllers[user_id]  # Используем контроллер пользователя
+    controller = await _ensure_controller(message, user_id)
+    if controller is None:
+        return
     # start() идемпотентен и race-free: проверка «уже запущена?» и создание
     # задачи неделимы — повторный /start_lesson не плодит вторую задачу.
     if not controller.start():
@@ -65,14 +77,9 @@ async def cmd_start_lesson(message: types.Message):
 @router.message(Command("stop_lesson"))
 async def cmd_stop_lesson(message: types.Message):
     user_id = message.from_user.id
-    if user_id not in lesson_controller.controllers:
-        # Пытаемся автоматически авторизовать пользователя, если он есть в БД
-        success = await auto_login_user(user_id)
-        if not success or user_id not in lesson_controller.controllers:
-            await message.answer("Сначала авторизуйтесь с помощью /login. Если вы уже авторизованы, попробуйте выполнить /login еще раз.")
-            return
-
-    controller = lesson_controller.controllers[user_id]  # Используем контроллер пользователя
+    controller = await _ensure_controller(message, user_id)
+    if controller is None:
+        return
     if not controller.is_running:
         await message.answer("Автокликалка уже остановлена.")
         return
@@ -84,14 +91,9 @@ async def cmd_stop_lesson(message: types.Message):
 @router.message(Command("status"))
 async def cmd_status(message: types.Message):
     user_id = message.from_user.id
-    if user_id not in lesson_controller.controllers:
-        # Пытаемся автоматически авторизовать пользователя, если он есть в БД
-        success = await auto_login_user(user_id)
-        if not success or user_id not in lesson_controller.controllers:
-            await message.answer("Сначала авторизуйтесь с помощью /login. Если вы уже авторизованы, попробуйте выполнить /login еще раз.")
-            return
-
-    controller = lesson_controller.controllers[user_id]  # Используем контроллер пользователя
+    controller = await _ensure_controller(message, user_id)
+    if controller is None:
+        return
     status = await controller.get_status()
     await message.answer(status)
 

@@ -23,6 +23,30 @@ BTN_MESSAGES = "✉️ Сообщения"
 BTN_PROFILE = "👤 Профиль"
 BTN_HELP = "❓ Помощь"
 
+# Telegram ограничивает callback_data 64 байтами.
+_CALLBACK_DATA_MAX_BYTES = 64
+
+
+def _encode_for_callback(value: str, prefix_len: int, suffix_reserve: int = 8) -> str:
+    """Base64-кодирует value для callback_data, обрезая при необходимости.
+
+    Точный поиск по полному ФИО/номеру (чтобы отсеять однофамильцев/похожие
+    номера) — обычный сценарий. Без обрезки base64 значения вместе с самым
+    длинным префиксом кнопок этой клавиатуры и номером недели мог превысить
+    лимит в 64 байта, и ВСЯ клавиатура (а с ней всё сообщение с уже готовым
+    расписанием) падала на отправке с BUTTON_DATA_INVALID.
+
+    prefix_len — длина самого длинного префикса кнопок клавиатуры (кнопки
+    делят одно и то же закодированное значение); suffix_reserve — запас под
+    "_<номер недели>" с учётом отрицательных offset'ов.
+    """
+    budget = max(0, _CALLBACK_DATA_MAX_BYTES - prefix_len - suffix_reserve)
+    encoded = base64.b64encode(value.encode("utf-8")).decode("utf-8")
+    while len(encoded) > budget and value:
+        value = value[:-1]
+        encoded = base64.b64encode(value.encode("utf-8")).decode("utf-8")
+    return encoded
+
 
 # --- Навигация по неделям ---
 
@@ -61,7 +85,7 @@ def get_teacher_week_navigation_buttons(teacher_name: str, week_number: int = No
         week_number = 0
 
     # Кодируем имя преподавателя для безопасной передачи в callback_data
-    encoded_name = base64.b64encode(teacher_name.encode('utf-8')).decode('utf-8')
+    encoded_name = _encode_for_callback(teacher_name, prefix_len=len("prev_teacher_week_"))
 
     buttons = [
         [
@@ -85,7 +109,7 @@ def get_classroom_week_navigation_buttons(classroom_number: str, week_number: in
         week_number = 0
 
     # Кодируем номер кабинета для безопасной передачи в callback_data
-    encoded_number = base64.b64encode(classroom_number.encode('utf-8')).decode('utf-8')
+    encoded_number = _encode_for_callback(classroom_number, prefix_len=len("prev_classroom_week_"))
 
     buttons = [
         [
@@ -109,7 +133,7 @@ def get_group_week_navigation_buttons(group_name: str, week_number: int = None) 
         week_number = 0
 
     # Кодируем название группы для безопасной передачи в callback_data
-    encoded_name = base64.b64encode(group_name.encode('utf-8')).decode('utf-8')
+    encoded_name = _encode_for_callback(group_name, prefix_len=len("image_group_week_"))
 
     buttons = [
         [

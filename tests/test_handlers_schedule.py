@@ -6,6 +6,7 @@ FSMContext. Сеть и реестры замоканы; кэш расписан
 """
 import asyncio
 import base64
+import os
 from types import SimpleNamespace
 
 from satanbonchbot import lk_client
@@ -78,6 +79,13 @@ class _FakeUserAPI:
         return []
 
 
+class _ExpiredSessionUserAPI:
+    """Фейк DebuggableBonchAPI: сессия истекла (get_raw_timetable уже бросил бы это)."""
+
+    async def get_timetable(self, week_offset=0):
+        raise ValueError("Session expired - ERR_MSG from LK. Need to re-authenticate.")
+
+
 def _lesson(teacher="Иванов И.И.", room_no="ауд. 401", week=1):
     return {
         'Группа': 'ИКВ-11', 'Число': '2026.05.18', 'День недели': 'Понедельник',
@@ -109,6 +117,19 @@ def test_cmd_timetable_authorized_sends_schedule(reset_registries):
 
     assert len(msg.answers) == 1
     assert msg.answers[0].get('reply_markup') is not None
+
+
+def test_cmd_timetable_session_expired_prompts_relogin(reset_registries):
+    """До фикса get_raw_timetable отдавал ERR_MSG как обычный HTML, парсер
+    падал с AttributeError на 'NoneType' и юзер видел бесполезное 'попробуй
+    позже' (или краш) вместо явного 'выполни /login заново'."""
+    lk_client.apis[1] = _ExpiredSessionUserAPI()
+    msg = FakeMessage(user_id=1)
+
+    asyncio.run(personal.cmd_timetable(msg, uid=1))
+
+    assert len(msg.answers) == 1
+    assert "/login" in msg.answers[0]['text']
 
 
 # --- personal: cb_sched_my ---------------------------------------------------
@@ -165,6 +186,21 @@ def test_cmd_teachers_lists_unique_teachers(reset_timetable_service):
     assert "Петров П.П." in text and "Иванов И.И." in text
 
 
+def test_cmd_teacher_timetable_shows_real_current_week(monkeypatch, reset_timetable_service):
+    """Регрессия, продублированная и здесь (тот же баг, что и в group.py):
+    раньше показывалась sorted(weeks)[0] вместо реальной текущей недели."""
+    ts = reset_timetable_service
+    ts.all_groups_timetable_cache = {
+        'ИКВ-11': [_lesson(teacher="Петров П.П.", week=1), _lesson(teacher="Петров П.П.", week=5)],
+    }
+    monkeypatch.setattr(sched_common, "_current_semester_week", lambda: 5)
+    msg = FakeMessage(user_id=1)
+
+    asyncio.run(teacher.cmd_teacher_timetable(msg, override="Петров"))
+
+    assert "Неделя №5" in msg.answers[0]['text']
+
+
 # --- room --------------------------------------------------------------------
 
 def test_cmd_classroom_timetable_no_args_shows_usage():
@@ -184,6 +220,21 @@ def test_cmd_classroom_timetable_found(reset_timetable_service):
 
     assert len(msg.answers) == 1
     assert "512" in msg.answers[0]['text']
+
+
+def test_cmd_classroom_timetable_shows_real_current_week(monkeypatch, reset_timetable_service):
+    """Тот же баг, что и в group.py/teacher.py: раньше показывалась
+    sorted(weeks)[0] вместо реальной текущей недели."""
+    ts = reset_timetable_service
+    ts.all_groups_timetable_cache = {
+        'ИКВ-11': [_lesson(room_no="ауд. 512", week=1), _lesson(room_no="ауд. 512", week=5)],
+    }
+    monkeypatch.setattr(sched_common, "_current_semester_week", lambda: 5)
+    msg = FakeMessage(user_id=1)
+
+    asyncio.run(room.cmd_classroom_timetable(msg, override="512"))
+
+    assert "Неделя №5" in msg.answers[0]['text']
 
 
 def test_cmd_classrooms_lists_unique_rooms(reset_timetable_service):
@@ -234,6 +285,120 @@ def test_cmd_group_timetable_unknown_group(monkeypatch, reset_timetable_service)
     asyncio.run(group.cmd_group_timetable(msg, override="НЕТ-99"))
 
     assert any("не найдена" in a['text'] for a in msg.answers)
+
+
+def test_cmd_group_timetable_shows_real_current_week(monkeypatch, reset_timetable_service):
+    """Регрессия: раньше показывалась sorted(weeks)[0] — начало семестра —
+    вместо реальной текущей недели (см. test_pick_current_week_* выше)."""
+    ts = reset_timetable_service
+    ts.all_groups_timetable_cache = {
+        'ИКВ-11': [_lesson(week=1), _lesson(week=5), _lesson(week=10)],
+    }
+
+    async def _fake_api():
+        return SimpleNamespace(groups_id={'1': 'ИКВ-11'})
+
+    monkeypatch.setattr(group, "get_timetable_api", _fake_api)
+    monkeypatch.setattr(sched_common, "_current_semester_week", lambda: 5)
+    msg = FakeMessage(user_id=1)
+
+    asyncio.run(group.cmd_group_timetable(msg, override="ИКВ-11"))
+
+    assert "Неделя №5" in msg.answers[0]['text']
+
+
+def test_cmd_group_timetable_splits_long_schedule_across_messages(monkeypatch, reset_timetable_service):
+    """Длинное расписание группы разбивается на несколько сообщений под лимит
+    Telegram; клавиатура — только на первом."""
+    long_lessons = []
+    for day in range(10):
+        for i in range(4):
+            lesson = dict(_lesson(
+                teacher=f"Преподаватель № {i} с очень длинным ФИО для растягивания текста",
+                week=1,
+            ))
+            lesson['Число'] = f"2026.05.{18 + day}"
+            long_lessons.append(lesson)
+    ts = reset_timetable_service
+    ts.all_groups_timetable_cache = {'ИКВ-11': long_lessons}
+
+    async def _fake_api():
+        return SimpleNamespace(groups_id={'1': 'ИКВ-11'})
+
+    monkeypatch.setattr(group, "get_timetable_api", _fake_api)
+    monkeypatch.setattr(sched_common, "_current_semester_week", lambda: 1)
+    msg = FakeMessage(user_id=1)
+
+    asyncio.run(group.cmd_group_timetable(msg, override="ИКВ-11"))
+
+    assert len(msg.answers) > 1
+    assert msg.answers[0].get('reply_markup') is not None
+    assert all(a.get('reply_markup') is None for a in msg.answers[1:])
+    assert all(len(a['text']) <= 4000 for a in msg.answers)
+
+
+# --- common: pure хелперы (текущая неделя / обрезка длинных сообщений) ------
+
+def test_pick_current_week_prefers_real_week_over_earliest(monkeypatch):
+    """Регрессия: раньше "текущая неделя" по умолчанию бралась как
+    sorted(weeks)[0] — буквально самая ранняя неделя в данных (начало
+    семестра), а НЕ реальная календарная неделя. Студент, открывший
+    /group_timetable (или /classroom_timetable, /teacher_timetable) в
+    середине семестра, видел расписание недели №1 почти весь семестр,
+    пока вручную не пролистает вперёд."""
+    monkeypatch.setattr(sched_common, "_current_semester_week", lambda: 10)
+    lessons = [_lesson(week=1), _lesson(week=10), _lesson(week=15)]
+
+    assert sched_common.pick_current_week(lessons) == 10
+
+
+def test_pick_current_week_falls_back_to_earliest_when_real_week_has_no_lessons(monkeypatch):
+    """Реальная текущая неделя есть, но занятий на неё в данных нет (сессия/
+    каникулы) — используем самую раннюю доступную, как и раньше."""
+    monkeypatch.setattr(sched_common, "_current_semester_week", lambda: 20)
+    lessons = [_lesson(week=1), _lesson(week=2)]
+
+    assert sched_common.pick_current_week(lessons) == 1
+
+
+def test_pick_current_week_empty_lessons_returns_none():
+    assert sched_common.pick_current_week([]) is None
+
+
+def test_truncate_for_telegram_leaves_short_text_untouched():
+    assert sched_common.truncate_for_telegram("коротко", max_length=4000) == "коротко"
+
+
+def test_truncate_for_telegram_cuts_long_text():
+    text = "x" * 5000
+    result = sched_common.truncate_for_telegram(text, max_length=4000)
+    assert len(result) <= 4000 + len("\n\n... (сообщение обрезано, используйте навигацию по неделям)")
+    assert result.startswith("x" * 4000)
+    assert "обрезано" in result
+
+
+def test_split_for_telegram_leaves_short_text_as_single_part():
+    assert sched_common.split_for_telegram("коротко", max_length=4000) == ["коротко"]
+
+
+def test_split_for_telegram_splits_on_day_boundaries():
+    day = "----------------------\n📌 день\n" + ("x" * 3000) + "\n"
+    text = day * 3  # ~9000+ символов, три «дня»
+
+    parts = sched_common.split_for_telegram(text, max_length=4000)
+
+    assert len(parts) > 1
+    assert all(len(p) <= 4000 for p in parts)
+    assert "".join(parts) == text
+
+
+def test_split_for_telegram_truncates_when_no_day_boundary_to_split_on():
+    text = "x" * 5000  # длинный текст без разделителя дня — резать некуда
+
+    parts = sched_common.split_for_telegram(text, max_length=4000)
+
+    assert len(parts) == 1
+    assert "обрезано" in parts[0]
 
 
 # --- common: cmd_reload_timetable --------------------------------------------
@@ -391,6 +556,35 @@ def test_process_group_week_navigation_image_branch(reset_timetable_service):
     asyncio.run(group.process_group_week_navigation(cb))
 
     assert len(cb.message.photos) == 1
+
+
+def test_process_group_week_navigation_cleans_temp_file_on_send_failure(reset_timetable_service, monkeypatch):
+    """os.remove временного PNG раньше выполнялся только на успешном пути:
+    сбой answer_photo (сеть/лимиты Telegram) оставлял файл на диске навсегда."""
+    ts = reset_timetable_service
+    ts.all_groups_timetable_cache = {'ИКВ-11': [_lesson()]}
+
+    generated_paths = []
+    original_generate = group.generate_timetable_image_from_dict
+
+    def _tracking_generate(*args, **kwargs):
+        path = original_generate(*args, **kwargs)
+        generated_paths.append(path)
+        return path
+
+    monkeypatch.setattr(group, "generate_timetable_image_from_dict", _tracking_generate)
+
+    class _FailingMessage(FakeMessage):
+        async def answer_photo(self, photo, **kwargs):
+            raise RuntimeError("Telegram недоступен")
+
+    cb = FakeCallbackQuery(data=f"image_group_week_{_enc('ИКВ-11')}_1", user_id=1)
+    cb.message = _FailingMessage(user_id=1)
+
+    asyncio.run(group.process_group_week_navigation(cb))
+
+    assert generated_paths, "изображение должно было сгенерироваться"
+    assert not os.path.exists(generated_paths[0]), "временный файл должен удаляться даже при сбое отправки"
 
 
 # --- personal: пресеты дня и картинка ----------------------------------------

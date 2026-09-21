@@ -17,15 +17,6 @@ from dotenv import load_dotenv
 from yarl import URL as YarlURL
 
 
-# КРИТИЧНО — порядок: в исходном main.py LK_CONCURRENCY/LK_LOGIN_DELAY_SEC/
-# LK_LOGIN_JITTER_SEC читались из env ДО вызова load_dotenv(). Порядок сохранён
-# намеренно (нулевое изменение поведения). Это вероятный скрытый баг исходника
-# (значения берутся только из реального окружения процесса, не из .env) —
-# чинить не в рамках этой задачи.
-# Ограничиваем частоту/параллелизм запросов к lk.sut.ru, чтобы не ловить антибот/ERR_MSG/403
-LK_CONCURRENCY = max(1, int(os.getenv("LK_CONCURRENCY", "1")))
-LK_LOGIN_DELAY_SEC = float(os.getenv("LK_LOGIN_DELAY_SEC", "1.5"))
-LK_LOGIN_JITTER_SEC = float(os.getenv("LK_LOGIN_JITTER_SEC", "1.0"))
 _LK_SEMAPHORE_BY_LOOP = {}
 
 # --- HTTP-заголовки для запросов в sut.ru -----------------------------------
@@ -92,6 +83,14 @@ logging.getLogger('aiogram').setLevel(
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 
+# Ограничиваем частоту/параллелизм запросов к lk.sut.ru, чтобы не ловить
+# антибот/ERR_MSG/403. Читаются ПОСЛЕ load_dotenv() — иначе значение,
+# заданное только в .env (единственный канал конфигурации для docker-compose),
+# никогда не подхватится, и оператор молча останется на дефолтах.
+LK_CONCURRENCY = max(1, int(os.getenv("LK_CONCURRENCY", "1")))
+LK_LOGIN_DELAY_SEC = float(os.getenv("LK_LOGIN_DELAY_SEC", "1.5"))
+LK_LOGIN_JITTER_SEC = float(os.getenv("LK_LOGIN_JITTER_SEC", "1.0"))
+
 # Период опроса входящих ЛК для уведомлений о новых сообщениях (минуты, C.2).
 # Чем реже — тем меньше нагрузка на ЛК и риск антибота.
 LK_MESSAGE_POLL_MIN = max(1, int(os.getenv("LK_MESSAGE_POLL_MIN", "15")))
@@ -107,15 +106,17 @@ TIMETABLE_REFRESH_HOURS = max(0.1, float(os.getenv("TIMETABLE_REFRESH_HOURS", "6
 # числа тиков рефреша; не может быть чаще самого рефреша.
 GROUP_REDETECT_HOURS = max(TIMETABLE_REFRESH_HOURS, float(os.getenv("GROUP_REDETECT_HOURS", "24")))
 
-# Прокси нужен ТОЛЬКО для запросов в ЛК (lk.sut.ru).
-# Напрямую, без прокси, ходят: Telegram (api.telegram.org) и публичное расписание
-# (cabinet.sut.ru, www.sut.ru) — последнее через прокси отвечает таймаутом.
+# Прокси нужен для запросов в sut.ru (lk.sut.ru, cabinet.sut.ru, www.sut.ru) —
+# напрямую (без прокси) с этой машины cabinet.sut.ru/www.sut.ru молча рвут
+# соединение (WAF режет не-RU IP), а lk.sut.ru отдаёт 403 на статику и
+# ClientProxyConnectionError на логин. Напрямую ходит только Telegram
+# (api.telegram.org) — его трогать прокси незачем.
 #
 # Прокси прокидывается через стандартные переменные HTTP(S)_PROXY: aiohttp-сессии для
 # sut.ru создаются с trust_env=True и подхватывают их автоматически. Хосты из NO_PROXY
 # при этом исключаются и идут напрямую. Telegram-сессия (aiogram AiohttpSession) env не
 # читает вовсе, так что для неё прокси не применяется в любом случае.
-NO_PROXY_HOSTS = "api.telegram.org,cabinet.sut.ru,www.sut.ru"
+NO_PROXY_HOSTS = "api.telegram.org"
 LK_PROXY = os.getenv("ALL_PROXY")
 if LK_PROXY:
     for _proxy_var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):

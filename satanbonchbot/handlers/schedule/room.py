@@ -22,6 +22,7 @@ from satanbonchbot.keyboards import  cancel_kb, get_classroom_week_navigation_bu
 from satanbonchbot.lk_client import  TimetableBonchAPI
 from satanbonchbot import timetable_service
 from satanbonchbot.timetable_service import  get_all_groups_timetable
+from satanbonchbot.handlers.schedule import  common as sched_common
 from satanbonchbot.formatting import  format_timetable_dict, merge_lessons_by_groups
 
 router = Router()
@@ -71,6 +72,7 @@ async def process_classroom_week_navigation(callback_query: CallbackQuery):
 
         # Форматируем расписание
         formatted_timetable = format_timetable_dict(classroom_timetable, f"Расписание кабинета: {classroom_number}", week_number=week_number)
+        formatted_timetable = sched_common.truncate_for_telegram(formatted_timetable)
 
         # Обновляем кнопки
         reply_markup = get_classroom_week_navigation_buttons(classroom_number, week_number)
@@ -106,7 +108,6 @@ async def cmd_classroom_timetable(message: types.Message, override: str = None):
 
     try:
         # Проверяем наличие кэша
-        status_msg = None
         if timetable_service.all_groups_timetable_cache is None:
             if timetable_service.timetable_loading:
                 status_msg = await message.answer("⏳ Расписание уже загружается, пожалуйста подождите...")
@@ -116,11 +117,6 @@ async def cmd_classroom_timetable(message: types.Message, override: str = None):
             # Не удаляем сообщение, так как оно будет обновляться с прогрессом
         else:
             all_timetable = timetable_service.all_groups_timetable_cache
-            if status_msg:
-                try:
-                    await status_msg.delete()
-                except:
-                    pass
 
         # Используем статический метод для фильтрации по кабинету
         classroom_timetable = merge_lessons_by_groups(
@@ -131,13 +127,18 @@ async def cmd_classroom_timetable(message: types.Message, override: str = None):
             await message.answer(f"❌ Не найдено занятий для кабинета: {classroom_number}")
             return
 
-        # Определяем текущую неделю (первая неделя с занятиями или текущая)
-        weeks = sorted(set(lesson.get('Номер недели', 0) for lesson in classroom_timetable))
-        current_week = weeks[0] if weeks else None
+        # Определяем текущую неделю: реальная текущая, если для неё есть
+        # занятия, иначе — первая неделя с занятиями (см. pick_current_week).
+        current_week = sched_common.pick_current_week(classroom_timetable)
 
         formatted_timetable = format_timetable_dict(classroom_timetable, f"Расписание кабинета: {classroom_number}", week_number=current_week)
         reply_markup = get_classroom_week_navigation_buttons(classroom_number, current_week)
-        await message.answer(formatted_timetable, parse_mode="Markdown", reply_markup=reply_markup)
+
+        # Длинное сообщение — разбиваем по дням под лимит Telegram; клавиатура
+        # только на первой части.
+        parts = sched_common.split_for_telegram(formatted_timetable)
+        for i, part in enumerate(parts):
+            await message.answer(part, parse_mode="Markdown", reply_markup=reply_markup if i == 0 else None)
 
     except Exception as e:
         logging.error(f"Ошибка при получении расписания кабинета: {e}", exc_info=True)
@@ -154,7 +155,6 @@ async def cmd_classrooms(message: types.Message):
 
     try:
         # Проверяем наличие кэша
-        status_msg = None
         if timetable_service.all_groups_timetable_cache is None:
             if timetable_service.timetable_loading:
                 status_msg = await message.answer("⏳ Расписание уже загружается, пожалуйста подождите...")
@@ -164,11 +164,6 @@ async def cmd_classrooms(message: types.Message):
             # Не удаляем сообщение, так как оно будет обновляться с прогрессом
         else:
             all_timetable = timetable_service.all_groups_timetable_cache
-            if status_msg:
-                try:
-                    await status_msg.delete()
-                except:
-                    pass
 
         # Извлекаем уникальные кабинеты из расписания
         classrooms_set = set()
